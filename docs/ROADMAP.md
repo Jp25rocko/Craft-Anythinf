@@ -1968,6 +1968,10 @@ Gaps found while using the app for real projects.
       so at 2× zoom in the smallest window (760×520, 380×260 points) its tab list starts off the
       left edge and the dialog runs off the bottom. Fit the dialog to the window, with the tab
       list scrolling when it must (found in #1301's review)
+- [ ] An Arabic UI that reads right to left: a full `ar` catalog, Arabic sentences in their right
+      word order (egui 0.36 shapes each word but lays words out left to right), and the window
+      mirrored (sidebar on the right, rows from the right)
+      — claimed: SoldierPePe, branch feature/r2.9-arabic-rtl
 
 ### R2.10 Pinned builds
 Owner: maintainers · Status: in progress
