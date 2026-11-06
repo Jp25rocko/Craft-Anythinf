@@ -144,8 +144,8 @@ pub fn show(app: &mut CraftApp, ui: &mut Ui) {
     // A download anywhere in the app fills the bottom edge of the bar, on every screen.
     let download = crate::engine_ui::global_download(app);
     if let Some((_, Some(f), _)) = &download {
-        let x = bar.left() + bar.width() * f.clamp(0.0, 1.0);
-        ui.painter().line_segment([egui::pos2(bar.left(), bar.bottom() - s), egui::pos2(x, bar.bottom() - s)], egui::Stroke::new(2.0 * s, t.accent));
+        let (from, x) = (widgets::mirror_x(bar, bar.left()), widgets::mirror_x(bar, bar.left() + bar.width() * f.clamp(0.0, 1.0)));
+        ui.painter().line_segment([egui::pos2(from, bar.bottom() - s), egui::pos2(x, bar.bottom() - s)], egui::Stroke::new(2.0 * s, t.accent));
     }
     ui.horizontal_centered(|ui| {
         ui.spacing_mut().item_spacing.x = theme::space::SM * s;
