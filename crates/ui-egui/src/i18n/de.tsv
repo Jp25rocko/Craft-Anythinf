@@ -1496,3 +1496,8 @@ Sign in to a website	Bei einer Website anmelden
 Some shared files could not be hard-linked and were copied instead ({size}).	Einige geteilte Dateien konnten nicht hart verlinkt werden und wurden kopiert ({size}).
 This server lists several chat models. Choose one:	Dieser Server bietet mehrere Chat-Modelle an. Wähle eines:
 Choose a model	Modell wählen
+Sees pictures	Sieht Bilder
+Yes	Ja
+No	Nein
+Whether a builder on this AI is shown pictures: the original's screenshots, your pictures of it, and the check's pictures of the build. Auto: what its server says; a model it says nothing about isn't shown any.	Ob ein Builder mit dieser KI Bilder gezeigt bekommt: die Screenshots des Originals, deine Bilder davon und die Bilder, die die Prüfung vom Build macht. Auto: was ihr Server sagt; ein Modell, über das er nichts sagt, bekommt keine.
+Set whether an AI sees pictures	Festlegen, ob eine KI Bilder sieht

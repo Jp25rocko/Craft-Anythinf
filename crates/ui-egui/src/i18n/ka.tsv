@@ -1496,3 +1496,8 @@ Sign in to a website	ვებსაიტზე შესვლა
 Some shared files could not be hard-linked and were copied instead ({size}).	ზოგიერთი საერთო ფაილი მყარი ბმულით ვერ დაკავშირდა და დაკოპირდა ({size}).
 This server lists several chat models. Choose one:	ეს სერვერი რამდენიმე ჩატის მოდელს გვთავაზობს. აირჩიეთ ერთი:
 Choose a model	აირჩიეთ მოდელი
+Sees pictures	სურათებს ხედავს
+Yes	კი
+No	არა
+Whether a builder on this AI is shown pictures: the original's screenshots, your pictures of it, and the check's pictures of the build. Auto: what its server says; a model it says nothing about isn't shown any.	ეჩვენება თუ არა ამ AI-ზე მომუშავე შემქმნელს სურათები: ორიგინალის ეკრანის ანაბეჭდები, შენი სურათები ორიგინალისა და შემოწმების მიერ გადაღებული სურათები ნაგებობისა. ავტომატური: რასაც მისი სერვერი ამბობს; მოდელს, რომელზეც სერვერი არაფერს ამბობს, სურათები არ ეჩვენება.
+Set whether an AI sees pictures	დააყენე, ხედავს თუ არა AI სურათებს
