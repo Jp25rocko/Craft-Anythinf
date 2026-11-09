@@ -1493,3 +1493,12 @@ You're up to date.	En güncel sürümdesiniz.
 Forget a website sign-in	Bir web sitesinin oturumunu unut
 Sign in to a website	Bir web sitesinde oturum aç
 Some shared files could not be hard-linked and were copied instead ({size}).	Bazı paylaşılan dosyalar sabit bağlantıyla bağlanamadı ve kopyalandı ({size}).
+Interface font	Arayüz yazı tipi
+The font for the whole window.	Tüm pencere için yazı tipi.
+Add a font file…	Yazı tipi dosyası ekle…
+That file is not a .ttf or .otf font.	Bu dosya bir .ttf veya .otf yazı tipi değil.
+That font file is too large.	Bu yazı tipi dosyası çok büyük.
+That file is not a font this app can read.	Bu dosya bu uygulamanın okuyabileceği bir yazı tipi değil.
+
+Detection looks at this computer: whether the API keys in your environment are set, model servers running here or on your network (their model list is requested), the coding agents you already installed, and the SSH hosts in your SSH config (suggestions only). No project files or prompts are uploaded, and nothing is added unless you choose it.	Detection looks at this computer: whether the API keys in your environment are set, model servers running here or on your network (their model list is requested), the coding agents you already installed, and the SSH hosts in your SSH config (suggestions only). No project files or prompts are uploaded, and nothing is added unless you choose it.
+That font file is empty.	Bu yazı tipi dosyası boş.

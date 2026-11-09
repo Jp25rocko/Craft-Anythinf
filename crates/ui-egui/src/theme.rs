@@ -229,7 +229,92 @@ include!(concat!(env!("OUT_DIR"), "/craft_fonts.rs"));
 
 /// Install Figtree (three weights: text, labels, and semibold for headings), JetBrains Mono
 /// (code), plus any craft-fonts as fallbacks.
+/// The folder beside the settings where a person's own fonts live (`<config dir>/fonts`).
+pub fn user_fonts_dir() -> std::path::PathBuf {
+    craft_anything_engine::settings::config_dir().join("fonts")
+}
+
+/// Font families bundled with this build, in manifest order (empty without craft-fonts).
+pub fn embedded_families() -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    for f in CRAFT_FONTS {
+        if !out.contains(&f.family) {
+            out.push(f.family);
+        }
+    }
+    out
+}
+
+/// The largest font file we load.
+pub(crate) const MAX_FONT_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Whether egui's own parser can read these bytes. A font it cannot read would panic it in
+/// `Fonts::new`, so the check runs before the bytes are handed over; a magic number alone is not
+/// enough (a truncated file, or a WOFF renamed to .ttf, passes that and still fails here).
+pub(crate) fn font_is_readable(bytes: &[u8]) -> bool {
+    skrifa::FontRef::new(bytes).is_ok()
+}
+
+/// The chosen face as `(name, bytes)`, when it resolves to something usable.
+fn chosen_face(choice: &str, fonts_dir: &std::path::Path) -> Option<(String, Vec<u8>)> {
+    let choice = choice.trim();
+    if let Some(family) = choice.strip_prefix("embedded:") {
+        let font = CRAFT_FONTS
+            .iter()
+            .find(|f| f.family == family && f.style.eq_ignore_ascii_case("regular"))
+            .or_else(|| CRAFT_FONTS.iter().find(|f| f.family == family))?;
+        return Some((format!("choice:embedded:{}", font.family), font.bytes.to_vec()));
+    }
+    let name = choice.strip_prefix("file:")?;
+    // A name only: one plain component, so no folders, no parent hops, no drive prefix.
+    let mut parts = std::path::Path::new(name).components();
+    let single = matches!(parts.next(), Some(std::path::Component::Normal(_))) && parts.next().is_none();
+    if name.is_empty() || !single {
+        log::warn!("ignoring a font name that is not a plain file name: {name:?}");
+        return None;
+    }
+    if !(name.to_ascii_lowercase().ends_with(".ttf") || name.to_ascii_lowercase().ends_with(".otf")) {
+        log::warn!("ignoring {name:?}: not a .ttf or .otf");
+        return None;
+    }
+    let path = fonts_dir.join(name);
+    match std::fs::metadata(&path) {
+        Ok(meta) if meta.len() > MAX_FONT_BYTES => {
+            log::warn!("{} is too large to be a font", path.display());
+            return None;
+        }
+        Ok(_) => {}
+        Err(e) => {
+            log::warn!("could not read {}: {e}", path.display());
+            return None;
+        }
+    }
+    let bytes = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(e) => {
+            log::warn!("could not read {}: {e}", path.display());
+            return None;
+        }
+    };
+    if !font_is_readable(&bytes) {
+        log::warn!("{} is not a font this build can read", path.display());
+        return None;
+    }
+    Some((format!("choice:file:{name}"), bytes))
+}
+
+/// Install the built-in font.
 pub fn install_fonts(ctx: &egui::Context) {
+    install_fonts_choice(ctx, "", &user_fonts_dir());
+}
+
+/// Install the chosen interface font at the front of the proportional stack (and of the medium and
+/// semibold stacks), or the built-in font when the choice is empty or cannot be read.
+pub fn install_fonts_choice(ctx: &egui::Context, choice: &str, fonts_dir: &std::path::Path) {
+    ctx.set_fonts(build_fonts(choice, fonts_dir));
+}
+
+fn build_fonts(choice: &str, fonts_dir: &std::path::Path) -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     for (name, weight) in FIGTREE_FACES {
         let tweak = FontTweak { coords: VariationCoords::new([(*b"wght", weight)]), ..Default::default() };
@@ -250,16 +335,28 @@ pub fn install_fonts(ctx: &egui::Context) {
     // Sans first: a mincho/serif fallback makes Japanese and Chinese UI text look like prose.
     let fallbacks = sans_first(fallbacks);
     let bold_fallbacks = sans_first(bold_fallbacks);
+    let chosen = chosen_face(choice, fonts_dir);
+    if let Some((name, bytes)) = &chosen {
+        fonts.font_data.insert(name.clone(), Arc::new(FontData::from_owned(bytes.clone())));
+    }
     fonts.families.entry(FontFamily::Proportional).or_default().insert(0, "Figtree".to_owned());
+    if let Some((name, _)) = &chosen {
+        fonts.families.entry(FontFamily::Proportional).or_default().insert(0, name.clone());
+    }
     fonts.families.entry(FontFamily::Monospace).or_default().insert(0, "JetBrainsMono".to_owned());
     for fam in [FontFamily::Proportional, FontFamily::Monospace] {
         fonts.families.entry(fam).or_default().extend(fallbacks.iter().cloned());
     }
     let base: Vec<String> = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
-    for (fam, stack) in weighted_families(&base, &bold_fallbacks) {
+    for (fam, mut stack) in weighted_families(&base, &bold_fallbacks) {
+        // The chosen face leads here too, so titles and headings follow it; the weight is whatever
+        // the family itself carries.
+        if let Some((name, _)) = &chosen {
+            stack.insert(0, name.clone());
+        }
         fonts.families.insert(fam, stack);
     }
-    ctx.set_fonts(fonts);
+    fonts
 }
 
 /// The medium and semibold families: Figtree's own weight first, then a script's bold face from
@@ -584,6 +681,74 @@ pub fn apply(ctx: &egui::Context, kind: ThemeKind, roomy: bool) {
         s.spacing.tooltip_width = 320.0;
         s.interaction.tooltip_delay = 0.3;
     });
+}
+
+#[cfg(test)]
+mod font_choice_tests {
+    use super::*;
+
+    /// The guard against egui's known panic: only bytes its own parser reads are handed over.
+    #[test]
+    fn only_a_font_the_parser_reads_is_accepted() {
+        assert!(font_is_readable(FIGTREE), "the bundled font is readable");
+        assert!(!font_is_readable(b"wOFF\0\0\0\0\0\0\0\0\0\0"), "WOFF is not an sfnt file");
+        assert!(!font_is_readable(b"not a font at all"));
+        assert!(!font_is_readable(&[]));
+    }
+
+    /// A stored name may only be one plain file name.
+    #[test]
+    fn a_font_name_may_not_carry_a_path() {
+        let dir = std::env::temp_dir().join(format!("craft-font-name-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        assert!(chosen_face("file:C:evil.ttf", &dir).is_none(), "no drive prefix");
+        assert!(chosen_face("file:sub/font.ttf", &dir).is_none(), "no folders");
+        assert!(chosen_face("file:..", &dir).is_none());
+        assert!(chosen_face("embedded:NoSuchFamily", &dir).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Installing a choice that cannot be read leaves the context usable: the next frame must not
+    /// panic the way egui does on a font it cannot parse.
+    #[test]
+    fn a_broken_choice_still_draws_a_frame() {
+        let dir = std::env::temp_dir().join(format!("craft-font-frame-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        std::fs::write(dir.join("broken.ttf"), b"\0\x01\0\0\0\0\0\0\0\0\0\0junk").expect("write");
+        let ctx = egui::Context::default();
+        install_fonts_choice(&ctx, "file:broken.ttf", &dir);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.label("hello");
+            });
+        });
+        // Nothing here owns a renderer, so the frame's texture deltas are released without the
+        // check that would otherwise fire when they are dropped unapplied.
+        out.textures_delta.set.clear();
+        out.textures_delta.free.clear();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The chosen face leads the proportional stack and both weight stacks, and the default keeps
+    /// Figtree first.
+    #[test]
+    fn the_chosen_face_leads_every_stack() {
+        let dir = std::env::temp_dir().join(format!("craft-font-stack-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let plain = build_fonts("", &dir);
+        assert_eq!(plain.families[&FontFamily::Proportional][0], "Figtree");
+
+        if let Some(font) = CRAFT_FONTS.iter().find(|f| f.style.eq_ignore_ascii_case("regular")) {
+            let choice = format!("embedded:{}", font.family);
+            let chosen = build_fonts(&choice, &dir);
+            let lead = format!("choice:embedded:{}", font.family);
+            assert_eq!(chosen.families[&FontFamily::Proportional][0], lead, "proportional leads with it");
+            assert_eq!(chosen.families[&FontFamily::Name("medium".into())][0], lead, "medium leads with it");
+            assert_eq!(chosen.families[&FontFamily::Name("semibold".into())][0], lead, "semibold leads with it");
+            assert!(chosen.font_data.contains_key(&lead), "the face is installed");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]

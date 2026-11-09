@@ -1495,3 +1495,12 @@ You're up to date.	Hai la versione più recente.
 Forget a website sign-in	Dimentica l'accesso a un sito web
 Sign in to a website	Accedi a un sito web
 Some shared files could not be hard-linked and were copied instead ({size}).	Alcuni file condivisi non hanno potuto essere collegati fisicamente e sono stati copiati ({size}).
+Interface font	Carattere dell'interfaccia
+The font for the whole window.	Il carattere di tutta la finestra.
+Add a font file…	Aggiungi un file di carattere…
+That file is not a .ttf or .otf font.	Quel file non è un carattere .ttf o .otf.
+That font file is too large.	Quel file di carattere è troppo grande.
+That file is not a font this app can read.	Quel file non è un carattere che questa app può leggere.
+
+Detection looks at this computer: whether the API keys in your environment are set, model servers running here or on your network (their model list is requested), the coding agents you already installed, and the SSH hosts in your SSH config (suggestions only). No project files or prompts are uploaded, and nothing is added unless you choose it.	Detection looks at this computer: whether the API keys in your environment are set, model servers running here or on your network (their model list is requested), the coding agents you already installed, and the SSH hosts in your SSH config (suggestions only). No project files or prompts are uploaded, and nothing is added unless you choose it.
+That font file is empty.	Quel file di carattere è vuoto.

@@ -1493,3 +1493,12 @@ You're up to date.	Du bist auf dem neuesten Stand.
 Forget a website sign-in	Anmeldung bei einer Website vergessen
 Sign in to a website	Bei einer Website anmelden
 Some shared files could not be hard-linked and were copied instead ({size}).	Einige geteilte Dateien konnten nicht hart verlinkt werden und wurden kopiert ({size}).
+Interface font	Oberflächen-Schrift
+The font for the whole window.	Die Schrift für das ganze Fenster.
+Add a font file…	Schriftdatei hinzufügen…
+That file is not a .ttf or .otf font.	Diese Datei ist keine .ttf- oder .otf-Schrift.
+That font file is too large.	Diese Schriftdatei ist zu groß.
+That file is not a font this app can read.	Diese Datei ist keine Schrift, die diese App lesen kann.
+
+Detection looks at this computer: whether the API keys in your environment are set, model servers running here or on your network (their model list is requested), the coding agents you already installed, and the SSH hosts in your SSH config (suggestions only). No project files or prompts are uploaded, and nothing is added unless you choose it.	Detection looks at this computer: whether the API keys in your environment are set, model servers running here or on your network (their model list is requested), the coding agents you already installed, and the SSH hosts in your SSH config (suggestions only). No project files or prompts are uploaded, and nothing is added unless you choose it.
+That font file is empty.	Diese Schriftdatei ist leer.

@@ -1493,3 +1493,12 @@ You're up to date.	คุณใช้เวอร์ชันล่าสุด�
 Forget a website sign-in	ลืมการลงชื่อเข้าใช้เว็บไซต์
 Sign in to a website	ลงชื่อเข้าใช้เว็บไซต์
 Some shared files could not be hard-linked and were copied instead ({size}).	ไฟล์ที่แชร์บางไฟล์สร้างฮาร์ดลิงก์ไม่ได้ จึงคัดลอกแทน ({size})
+Interface font	ฟอนต์อินเทอร์เฟซ
+The font for the whole window.	ฟอนต์สำหรับทั้งหน้าต่าง
+Add a font file…	เพิ่มไฟล์ฟอนต์…
+That file is not a .ttf or .otf font.	ไฟล์นั้นไม่ใช่ฟอนต์ .ttf หรือ .otf
+That font file is too large.	ไฟล์ฟอนต์นั้นใหญ่เกินไป
+That file is not a font this app can read.	ไฟล์นั้นไม่ใช่ฟอนต์ที่แอปนี้อ่านได้
+
+Detection looks at this computer: whether the API keys in your environment are set, model servers running here or on your network (their model list is requested), the coding agents you already installed, and the SSH hosts in your SSH config (suggestions only). No project files or prompts are uploaded, and nothing is added unless you choose it.	Detection looks at this computer: whether the API keys in your environment are set, model servers running here or on your network (their model list is requested), the coding agents you already installed, and the SSH hosts in your SSH config (suggestions only). No project files or prompts are uploaded, and nothing is added unless you choose it.
+That font file is empty.	ไฟล์ฟอนต์นั้นว่างเปล่า

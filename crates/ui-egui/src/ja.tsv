@@ -948,3 +948,12 @@ yesterday	昨日
 … {n} older	… 古いもの {n} 件
 Connecting to {name}… {seconds} s	{name} に接続中… {seconds} 秒
 Some shared files could not be hard-linked and were copied instead ({size}).	共有ファイルの一部はハードリンクできず、コピーしました（{size}）。
+Interface font	表示フォント
+The font for the whole window.	ウィンドウ全体のフォントです。
+Add a font file…	フォントファイルを追加…
+That file is not a .ttf or .otf font.	そのファイルは .ttf か .otf のフォントではありません。
+That font file is too large.	そのフォントファイルは大きすぎます。
+That file is not a font this app can read.	そのファイルはこのアプリが読めるフォントではありません。
+
+Detection looks at this computer: whether the API keys in your environment are set, model servers running here or on your network (their model list is requested), the coding agents you already installed, and the SSH hosts in your SSH config (suggestions only). No project files or prompts are uploaded, and nothing is added unless you choose it.	Detection looks at this computer: whether the API keys in your environment are set, model servers running here or on your network (their model list is requested), the coding agents you already installed, and the SSH hosts in your SSH config (suggestions only). No project files or prompts are uploaded, and nothing is added unless you choose it.
+That font file is empty.	そのフォントファイルは空です。
