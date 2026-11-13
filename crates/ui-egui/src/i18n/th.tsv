@@ -1493,3 +1493,4 @@ You're up to date.	คุณใช้เวอร์ชันล่าสุด�
 Forget a website sign-in	ลืมการลงชื่อเข้าใช้เว็บไซต์
 Sign in to a website	ลงชื่อเข้าใช้เว็บไซต์
 Some shared files could not be hard-linked and were copied instead ({size}).	ไฟล์ที่แชร์บางไฟล์สร้างฮาร์ดลิงก์ไม่ได้ จึงคัดลอกแทน ({size})
+Detection looks at this computer: whether the API keys in your environment are set, model servers running here or on your network (their model list is requested), the coding agents you already installed, and the SSH hosts in your SSH config (suggestions only). No project files or prompts are uploaded, and nothing is added unless you choose it.	การตรวจจับจะดูบนคอมพิวเตอร์เครื่องนี้: ว่ามีการตั้งค่าคีย์ API ในสภาพแวดล้อมหรือไม่ เซิร์ฟเวอร์โมเดลที่ทำงานอยู่ที่นี่หรือบนเครือข่ายของคุณ (จะขอรายการโมเดล) เอเจนต์เขียนโค้ดที่ติดตั้งไว้แล้ว และโฮสต์ SSH ที่ตั้งค่าไว้ (เป็นเพียงข้อเสนอ) ไม่มีการอัปโหลดไฟล์โปรเจกต์หรือพรอมป์ต์ และจะไม่มีการเพิ่มสิ่งใดจนกว่าคุณจะเลือก

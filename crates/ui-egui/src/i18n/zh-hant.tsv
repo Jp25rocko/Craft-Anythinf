@@ -1493,3 +1493,4 @@ You're up to date.	已是最新版本。
 Forget a website sign-in	忘記網站登入
 Sign in to a website	登入網站
 Some shared files could not be hard-linked and were copied instead ({size}).	部分共用檔案無法建立硬連結，已改為複製（{size}）。
+Detection looks at this computer: whether the API keys in your environment are set, model servers running here or on your network (their model list is requested), the coding agents you already installed, and the SSH hosts in your SSH config (suggestions only). No project files or prompts are uploaded, and nothing is added unless you choose it.	偵測會查看這台電腦上的：環境變數中的 API 金鑰是否已設定、在本機或網路上執行的模型伺服器（會詢問其模型清單）、已安裝的程式設計代理，以及設定中設定的 SSH 主機（僅供建議）。不會上傳專案檔案或提示詞，也不會在你選擇之前新增任何內容。

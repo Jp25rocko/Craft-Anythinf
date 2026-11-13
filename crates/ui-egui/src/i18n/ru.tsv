@@ -1493,3 +1493,4 @@ You're up to date.	Установлена последняя версия.
 Forget a website sign-in	Забыть вход на сайт
 Sign in to a website	Войти на сайт
 Some shared files could not be hard-linked and were copied instead ({size}).	Некоторые общие файлы не удалось связать жёсткими ссылками, и они были скопированы ({size}).
+Detection looks at this computer: whether the API keys in your environment are set, model servers running here or on your network (their model list is requested), the coding agents you already installed, and the SSH hosts in your SSH config (suggestions only). No project files or prompts are uploaded, and nothing is added unless you choose it.	Поиск смотрит на этом компьютере: заданы ли ключи API в вашем окружении, серверы моделей здесь или в вашей сети (у них запрашивается список моделей), уже установленные агенты и SSH-хосты из ваших настроек (только подсказки). Файлы проектов и запросы не отправляются, и ничего не добавляется, пока вы не выберете.
