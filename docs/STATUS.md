@@ -642,8 +642,11 @@ launch or preview was run for this documentation correction.
   own permissions. It hasn't been run as a `maki -p` builder here.
 - Claude Code is fully wired as a builder; Codex works through its own flags (our tools are pre-approved for
   `codex exec` and every tool permitted by the current mode is listed from startup, see `docs/codex.md`)
-  but doesn't resume. Codex 0.166.0 received the full Clean room inventory through a loopback model;
-  no real-account build has been run;
+  and resumes its reported thread on follow-up turns and when reopening a saved session.
+  Codex 0.166.0 received the full Clean room inventory through a loopback model.
+  An opt-in live adapter check on macOS with Codex 0.169.0-alpha.11.1 and gpt-6.1-sol
+  verified a real MCP call, a sandboxed file write, a second turn and reopening the same
+  thread (2026-11-14). No complete real-account rebuild or GUI run was checked;
   Copilot builds, model discovery and real-account session
   resume were confirmed by the person using the app. Other agent programs
   without an adapter get plain text in and out. API-key

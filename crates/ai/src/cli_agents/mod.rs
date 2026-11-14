@@ -2043,6 +2043,25 @@ mod tests {
     }
 
     #[test]
+    fn codex_resume_keeps_run_configuration_and_reads_prompt_from_stdin() {
+        let codex = adapter_for("codex");
+        assert!(codex.resumes());
+        let options =
+            BackendOptions { cli_model: Some("test-model".into()), args: vec!["-c".into(), "model_reasoning_effort=\"low\"".into()], ..Default::default() };
+        for access in [Access::Analyse, Access::Build] {
+            let fresh = build_args(codex.as_ref(), &options, "first", "P:", &mcp(), None, access);
+            let resumed = build_args(codex.as_ref(), &options, "follow-up", "P:", &mcp(), Some("saved-thread"), access);
+            let mut expected = fresh;
+            expected.pop();
+            expected.extend(["resume".into(), "--".into(), "saved-thread".into(), "-".into()]);
+            assert_eq!(resumed, expected, "resume keeps model, sandbox and MCP configuration");
+            assert_eq!(codex.stdin_text("P:", "follow-up"), "P:follow-up");
+        }
+        let args = build_args(codex.as_ref(), &options, "q", "", &mcp(), Some("--last"), Access::Build);
+        assert!(args.windows(4).any(|w| w == ["resume", "--", "--last", "-"]), "a saved id cannot select another thread");
+    }
+
+    #[test]
     fn gemini_long_prompt_goes_in_on_stdin() {
         // npm starts Gemini CLI through `gemini.cmd`, where cmd.exe allows 8,191 characters.
         let gemini = adapter_for("gemini-cli");
@@ -2661,6 +2680,56 @@ echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
         }
     }
 
+    /// A reported Codex thread is used on the next turn and after reopening the conversation.
+    #[cfg(unix)]
+    #[test]
+    fn codex_resumes_reported_and_saved_threads_through_the_runner() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("codex");
+        std::fs::write(
+            &program,
+            r#"#!/bin/sh
+d=$(dirname "$0")
+if [ "$2" = "--help" ]; then echo "--json"; exit 0; fi
+printf '%s\n' "$@" > "$d/argv"
+cat > "$d/stdin"
+echo '{"type":"thread.started","thread_id":"saved-thread"}'
+echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let config = BackendConfig { name: "Codex".into(), kind: BackendKind::AgentCli, model: "codex".into(), base_url: None, ssh_host: None, enabled: true };
+        let options = BackendOptions { command: Some(program.display().to_string()), ..Default::default() };
+        let mut spec = CliSpec::new(config, options, false, None);
+        spec.preamble = Some("P:".into());
+        let mut c = CliConversation::new(spec.clone());
+        let finish = |c: &mut CliConversation, prompt: &str| {
+            c.send(prompt);
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let mut all = Vec::new();
+            while std::time::Instant::now() < deadline && !all.iter().any(|e| matches!(e, AgentEvent::TurnDone { .. })) {
+                all.extend(c.poll());
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            c.stop();
+            assert!(all.iter().any(|e| matches!(e, AgentEvent::TurnDone { .. })), "{all:?}");
+            assert!(!all.iter().any(|e| matches!(e, AgentEvent::Error { .. })), "{all:?}");
+            assert_eq!(c.session_id().as_deref(), Some("saved-thread"));
+            assert_eq!(std::fs::read_to_string(dir.path().join("stdin")).unwrap(), format!("P:{prompt}"));
+            std::fs::read_to_string(dir.path().join("argv")).unwrap()
+        };
+        let first = finish(&mut c, "first");
+        assert!(!first.lines().any(|a| a == "resume"));
+        let next = finish(&mut c, "second");
+        assert!(next.ends_with("resume\n--\nsaved-thread\n-\n"), "{next}");
+        spec.resume = c.session_id();
+        drop(c);
+        let reopened = finish(&mut CliConversation::new(spec), "third");
+        assert!(reopened.ends_with("resume\n--\nsaved-thread\n-\n"), "{reopened}");
+    }
+
     /// #528, on every platform: the Codex command line stays short, and a child process started
     /// with a message longer than Windows' 32,767-character limit gets all of it on stdin. The
     /// child is this test binary, running `stdin_echo_child`.
@@ -3160,7 +3229,7 @@ echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
         assert!(matches!(p.line(r#"{"say":"hello"}"#).as_slice(), [AgentEvent::TextDelta { text }] if text == "hello"));
         // Unknown agents stream their output as text; the built-ins keep their own adapters.
         assert!(!reg.for_agent("no-such-agent").streams_json());
-        assert!(reg.for_agent("claude").resumes() && !reg.for_agent("codex").resumes() && reg.for_agent("antigravity").resumes());
+        assert!(reg.for_agent("claude").resumes() && reg.for_agent("codex").resumes() && reg.for_agent("antigravity").resumes());
         // Registering an adapter for an existing id replaces that one.
         reg.register(Arc::new(EchoAgent));
         assert_eq!(

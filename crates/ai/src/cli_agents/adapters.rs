@@ -817,6 +817,10 @@ impl AgentAdapter for Codex {
         &["codex"]
     }
 
+    fn resumes(&self) -> bool {
+        true
+    }
+
     /// Ask the selected CLI, not its auth file or keychain; discard raw status output.
     fn signed_in(&self, program: &str) -> Option<bool> {
         let out = Process::new(program).args(["login", "status"]).timeout(Duration::from_secs(10)).stdout_cap(16 * 1024).run().ok()?;
@@ -875,6 +879,11 @@ impl AgentAdapter for Codex {
             v.extend(["-m".into(), m.clone()]);
         }
         v.extend(cx.options.args.iter().cloned());
+        // Exec-only flags (notably --sandbox) stay before the resume subcommand.
+        // The saved thread id is positional data, never another CLI option.
+        if let Some(id) = cx.resume {
+            v.extend(["resume".into(), "--".into(), id.into()]);
+        }
         // The message itself goes in on stdin (see `stdin_text`).
         v.push("-".into());
         v
