@@ -115,7 +115,9 @@ pub struct OpenParams {
     /// Browser to use: "private" (default) starts a fresh private browser; "attached" uses a
     /// browser already running with --remote-debugging-port at cdp_endpoint and leaves it
     /// running (Deep mode only: it shows that browser's signed-in state; cookies and
-    /// storage are never read).
+    /// storage are never read). Surfaced in the CLI flags (--browser/--cdp-endpoint), the
+    /// Experienced tool form (schema fields) and the MCP transport; the Beginner "Look at a
+    /// website" dialog never sets it and always opens private.
     #[serde(default = "d_private")]
     pub browser: String,
     /// Loopback CDP endpoint for browser "attached", e.g. http://127.0.0.1:9222 (the browser
@@ -1309,6 +1311,50 @@ mod tests {
         assert_eq!(call(json!({"url": "https://example.com", "browser": "attached", "cdp_endpoint": "http://192.168.1.50:9222"})).code, ErrorCode::BadSettings);
         // Nothing answers on this loopback port: an engine problem, not a launch or a crash.
         assert_eq!(call(json!({"url": "https://example.com", "browser": "attached", "cdp_endpoint": "http://127.0.0.1:1"})).code, ErrorCode::EngineMissing);
+    }
+
+    /// Attached opens in Clean room are refused as a feature, not a crash or a hang, and every
+    /// attached error says how to fix it in plain words. The clean-room engine points chromium at
+    /// an existing file only so the value checks (not the engine gate) are what run.
+    #[test]
+    fn attached_open_in_clean_room_is_refused_and_attached_errors_say_how_to_fix() {
+        let dir = tempfile::tempdir().unwrap();
+        let browser = dir.path().join("browser");
+        std::fs::write(&browser, "").unwrap();
+        let mut clean = crate::testing::session();
+        clean.settings.deep_mode = false;
+        clean.settings.engines.tools.chromium = Some(browser.clone());
+        let clean_engine = crate::Engine::new(clean);
+        let refused = clean_engine
+            .call(
+                "web_site_open",
+                json!({"url": "https://example.com", "browser": "attached", "cdp_endpoint": "http://127.0.0.1:9222"}),
+                crate::CallOptions::new(Caller::Cli).with_consent(crate::Consent::Granted),
+            )
+            .unwrap_err();
+        assert_eq!(refused.code, ErrorCode::FeatureMissing, "{refused:?}");
+        assert!(crate::clean_room::is_refusal(&refused), "{refused:?}");
+        assert!(refused.remediation.as_deref().unwrap_or_default().contains("Deep mode"), "{refused:?}");
+
+        // Deep mode: every attached validation error carries a remediation and never launches.
+        let mut session = crate::testing::session();
+        session.settings.engines.tools.chromium = Some(browser);
+        let e = crate::Engine::new(session);
+        let call = |params: Value| e.call("web_site_open", params, crate::CallOptions::new(Caller::Cli).with_consent(crate::Consent::Granted)).unwrap_err();
+        for params in [
+            json!({"url": "https://example.com", "browser": "ego"}),
+            json!({"url": "https://example.com", "browser": "attached"}),
+            json!({"url": "https://example.com", "browser": "attached", "cdp_endpoint": "http://localhost:9222"}),
+            json!({"url": "https://example.com", "browser": "attached", "cdp_endpoint": "https://127.0.0.1:9222"}),
+            json!({"url": "https://example.com", "browser": "attached", "cdp_endpoint": "http://127.0.0.1:1"}),
+        ] {
+            let err = call(params);
+            assert!(err.remediation.as_deref().is_some_and(|r| !r.is_empty()), "{err:?} needs a fix");
+        }
+        // The unreachable loopback port is an engine problem with a start-the-browser fix.
+        let unreachable = call(json!({"url": "https://example.com", "browser": "attached", "cdp_endpoint": "http://127.0.0.1:1"}));
+        assert_eq!(unreachable.code, ErrorCode::EngineMissing);
+        assert!(unreachable.remediation.as_deref().unwrap_or_default().contains("remote-debugging-port"), "{unreachable:?}");
     }
 
     #[test]

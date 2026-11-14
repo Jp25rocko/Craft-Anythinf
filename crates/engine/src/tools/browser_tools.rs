@@ -1805,6 +1805,11 @@ pub struct WalkthroughParams {
     pub capture: WalkthroughCapture,
     /// Cookies and storage to start with (e.g. to explore the signed-in side of your own site).
     /// Every value given here is treated as a secret and redacted wherever it shows up.
+    /// To seed from a browser's CDP `Storage.getCookies` export (via a Page session, e.g.
+    /// `await page.cdp("Storage.getCookies")` — not `task.cdp`, which only takes Target/Browser
+    /// commands), filter that `cookies` array to the site's domain first (at most 200) and map
+    /// each entry per `StartingCookie`. Never log or store the exported `value`s: the run
+    /// reports only which names were set.
     #[serde(default)]
     pub storage: StartingStorage,
 }
@@ -2024,6 +2029,27 @@ fn capture_artifacts(client: &mut CdpClient, kinds: &[Artifact], dom_cap: usize,
     Value::Object(out)
 }
 
+/// Cookies and storage seeded before a walkthrough run.
+///
+/// An ego `page.cdp("Storage.getCookies")` result (`{"cookies": [...]}` of CDP
+/// `Network.Cookie`) becomes `{"cookies": [...], "local_storage": [], "session_storage": []}`
+/// by this exact mapping, entry by entry (names only in every log; values never logged):
+///
+/// | export field | `storage.cookies` field | rule |
+/// |---|---|---|
+/// | `name` | `name` | as-is |
+/// | `value` | `value` | as-is (a secret: redacted in every output) |
+/// | `domain` + `path` + `sourceScheme`/`secure` + `sourcePort` | `url` | `scheme://host[:port]path`: host is `domain` without a leading `.`; scheme is `https` when `sourceScheme` is `Secure` or `secure` is true, else `http`; a non-default `sourcePort` is kept, the default for the scheme is omitted; an empty `path` becomes `/` |
+/// | `httpOnly` | `http_only` | boolean as-is |
+/// | `secure` | `secure` | boolean as-is |
+/// | `sameSite` | `same_site` | `Strict`/`Lax`/`None` as-is; omit when absent |
+/// | `expires`, `session`, `priority`, `size` | — | dropped: the cookie becomes session-scoped for the run |
+///
+/// A domain cookie (`.example.com`) becomes a host cookie for `example.com` (the leading dot
+/// is stripped); `Network.setCookie` with a `url` sets host-only cookies. local/session storage
+/// is a separate CDP domain (`DOMStorage`), not part of `Storage.getCookies`, and is seeded
+/// through `local_storage`/`session_storage` instead. Filter the export to the site before
+/// seeding: `storage.cookies` caps at 200 entries.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct StartingStorage {
@@ -2035,15 +2061,20 @@ pub struct StartingStorage {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StartingCookie {
-    /// The http(s) URL the cookie belongs to.
+    /// The http(s) URL the cookie belongs to (from an export's `domain`, `path`, `sourceScheme`
+    /// or `secure`, and non-default `sourcePort`; see `StartingStorage`).
     pub url: String,
+    /// The cookie name (export `name`).
     pub name: String,
+    /// The cookie value (export `value`; a secret, redacted in every output).
     pub value: String,
+    /// HttpOnly flag (export `httpOnly`).
     #[serde(default)]
     pub http_only: bool,
+    /// Secure flag (export `secure`).
     #[serde(default)]
     pub secure: bool,
-    /// Strict, Lax or None.
+    /// Strict, Lax or None (export `sameSite`; omit when absent).
     #[serde(default)]
     pub same_site: Option<String>,
 }
