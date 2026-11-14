@@ -1496,6 +1496,7 @@ Sign in to a website	Iniciar sesión en un sitio web
 Some shared files could not be hard-linked and were copied instead ({size}).	Algunos archivos compartidos no se pudieron enlazar de forma rígida y se copiaron ({size}).
 This server lists several chat models. Choose one:	Este servidor ofrece varios modelos de chat. Elige uno:
 Choose a model	Elige un modelo
+Auto	Automático
 Sees pictures	Ve imágenes
 Yes	Sí
 No	No

@@ -1496,6 +1496,7 @@ Sign in to a website	登入網站
 Some shared files could not be hard-linked and were copied instead ({size}).	部分共用檔案無法建立硬連結，已改為複製（{size}）。
 This server lists several chat models. Choose one:	此伺服器提供多個聊天模型。請選擇一個：
 Choose a model	選擇模型
+Auto	自動
 Sees pictures	能看圖片
 Yes	是
 No	否

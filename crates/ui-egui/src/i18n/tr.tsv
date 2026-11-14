@@ -1496,6 +1496,7 @@ Sign in to a website	Bir web sitesinde oturum aç
 Some shared files could not be hard-linked and were copied instead ({size}).	Bazı paylaşılan dosyalar sabit bağlantıyla bağlanamadı ve kopyalandı ({size}).
 This server lists several chat models. Choose one:	Bu sunucuda birden fazla sohbet modeli var. Birini seçin:
 Choose a model	Bir model seçin
+Auto	Otomatik
 Sees pictures	Resim görür
 Yes	Evet
 No	Hayır

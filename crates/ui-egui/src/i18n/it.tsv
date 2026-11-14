@@ -1498,6 +1498,7 @@ Sign in to a website	Accedi a un sito web
 Some shared files could not be hard-linked and were copied instead ({size}).	Alcuni file condivisi non hanno potuto essere collegati fisicamente e sono stati copiati ({size}).
 This server lists several chat models. Choose one:	Questo server offre diversi modelli di chat. Scegline uno:
 Choose a model	Scegli un modello
+Auto	Automatico
 Sees pictures	Vede le immagini
 Yes	Sì
 No	No
