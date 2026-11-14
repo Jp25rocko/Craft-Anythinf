@@ -1621,7 +1621,9 @@ Gaps found while using the app for real projects.
       sign-in); a confined Snap or Flatpak browser and a real site were not run. The window's own
       `chrome://version` and `chrome://prefs-internals` showed the `Default` profile and password and card
       saving off (Chrome for Testing 156, live test
-      `the_sign_in_window_runs_the_prepared_profile_with_saving_off`); Windows and macOS were not run
+      `the_sign_in_window_runs_the_prepared_profile_with_saving_off`). The live sign-in tests also
+      passed twice with Chrome for Testing 157 on macOS, including the profile and session-cookie
+      handoff; the Linux-only no-desktop test returns early there. Windows was not run
       — claimed: execsumo, branch feature/r2.9-signed-in-website-study
       Review fixes: saved profiles use normalized host and effective port; browser reuse also
       checks the saved revision, and explicit `signed_in: false` always starts fresh. Builder

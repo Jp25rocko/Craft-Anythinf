@@ -88,8 +88,11 @@ fn save_fixture(session: &Session, key: &str) -> PathBuf {
     let profile = dir.join(PROFILE_DIR);
     std::fs::create_dir_all(profile.join("Default/Cache")).unwrap();
     std::fs::create_dir_all(profile.join("Default/Service Worker/CacheStorage")).unwrap();
+    std::fs::create_dir_all(profile.join("Default/Sessions")).unwrap();
     std::fs::write(profile.join("Default/Cookies"), b"fake-cookie-db").unwrap();
     std::fs::write(profile.join("Default/Cache/data_0"), b"cached").unwrap();
+    std::fs::write(profile.join("Default/Sessions/Session_1"), b"old tabs").unwrap();
+    std::fs::write(profile.join("Default/Current Tabs"), b"old tabs").unwrap();
     std::fs::write(profile.join("Default/Service Worker/CacheStorage/x"), b"cached").unwrap();
     std::fs::write(profile.join("Default/Service Worker/Database"), b"kept").unwrap();
     std::fs::write(profile.join("SingletonCookie"), b"lock").unwrap();
@@ -97,6 +100,15 @@ fn save_fixture(session: &Session, key: &str) -> PathBuf {
     std::fs::write(profile.join("Local State"), b"{}").unwrap();
     std::fs::write(dir.join(RECORD_FILE), json!({"version": 1, "site": key, "saved_at": 1}).to_string()).unwrap();
     profile
+}
+
+#[test]
+fn vanished_browser_markers_are_excluded_before_metadata_is_read() {
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["RunningChromeVersion", "DevToolsActivePort", "Login Data", "Web Data-wal"] {
+        assert!(profile_entry_metadata(&dir.path().join(name), name).unwrap().is_none(), "{name}");
+    }
+    assert!(profile_entry_metadata(&dir.path().join("Cookies"), "Cookies").is_err());
 }
 
 #[test]
@@ -119,6 +131,8 @@ fn a_profile_copy_skips_caches_locks_and_links() {
     assert!(t.join("Local State").is_file());
     for gone in [
         "Default/Cache",
+        "Default/Sessions",
+        "Default/Current Tabs",
         "Default/Service Worker/CacheStorage",
         "SingletonCookie",
         "SingletonLock",

@@ -366,6 +366,15 @@ fn unique(prefix: &str) -> String {
     format!("{prefix}-{}-{}-{nanos}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
 }
 
+/// Running-browser markers and credential stores can disappear during shutdown. Never inspect
+/// them: their names alone are enough to exclude them from the saved profile.
+fn profile_entry_metadata(path: &Path, name: &str) -> Result<Option<std::fs::Metadata>, ToolError> {
+    if SKIPPED_FILES.contains(&name) || is_credential_store(name) {
+        return Ok(None);
+    }
+    std::fs::symlink_metadata(path).map(Some).map_err(|e| ToolError::io(path.display(), e))
+}
+
 /// Copy the saved profile `from` into the empty folder `to`, skipping caches, lock files and the
 /// browser's password and card stores, and never following a link (links are left out). Going over a cap is an error, not a partial copy.
 pub fn copy_profile(from: &Path, to: &Path, caps: &CopyCaps) -> Result<(), ToolError> {
@@ -384,7 +393,7 @@ pub fn copy_profile(from: &Path, to: &Path, caps: &CopyCaps) -> Result<(), ToolE
             let name_str = name.to_string_lossy();
             let path = entry.path();
             // symlink_metadata: a link is seen as a link, never as what it points at.
-            let meta = std::fs::symlink_metadata(&path).map_err(|e| ToolError::io(path.display(), e))?;
+            let Some(meta) = profile_entry_metadata(&path, &name_str)? else { continue };
             let target = dst.join(&name);
             if meta.file_type().is_symlink() {
                 continue;
@@ -403,9 +412,6 @@ pub fn copy_profile(from: &Path, to: &Path, caps: &CopyCaps) -> Result<(), ToolE
                 private_dir(&target)?;
                 stack.push((path, target, depth.saturating_add(1)));
             } else if meta.is_file() {
-                if SKIPPED_FILES.contains(&name_str.as_ref()) || is_credential_store(&name_str) {
-                    continue;
-                }
                 files = files.saturating_add(1);
                 bytes = bytes.saturating_add(meta.len());
                 if files > caps.max_files {

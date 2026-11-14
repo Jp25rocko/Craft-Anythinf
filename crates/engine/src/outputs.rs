@@ -149,15 +149,18 @@ pub fn absolute_program(program: &Path) -> PathBuf {
 pub fn launch(app: &Path, godot: Option<&Path>) -> Option<(PathBuf, Vec<String>)> {
     if app.join("project.godot").is_file() {
         let root = std::path::absolute(app).ok()?;
-        // Godot decodes --path as UTF-8. A lossy conversion could open a different project.
-        let project = root.to_str()?;
-        return godot.map(|g| (g.to_path_buf(), vec!["--path".into(), project.into()]));
+        return godot_launch(&root, godot?);
     }
     if uses_electron(app) {
         let root = std::path::absolute(app).ok()?;
         return electron_program(&root).map(|e| (e, vec![root.display().to_string()]));
     }
     built_program(app).or_else(|| packaged_program(&app.join("Build"))).map(|p| (p, Vec::new())).or_else(|| crate::toolchains::found_in(app)?.launch(app))
+}
+
+// Godot decodes --path as UTF-8. A lossy conversion could open a different project.
+fn godot_launch(root: &Path, godot: &Path) -> Option<(PathBuf, Vec<String>)> {
+    Some((godot.to_path_buf(), vec!["--path".into(), root.to_str()?.into()]))
 }
 
 /// The packages `app`'s package.json depends on (dev dependencies too); none without a readable one.
@@ -266,13 +269,11 @@ mod launch_tests {
         let dir = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
         let app = dir.path().join(std::ffi::OsStr::from_bytes(b"game-\xff"));
         let other = dir.path().join("game-\u{fffd}");
-        for folder in [&app, &other] {
-            std::fs::create_dir(folder).unwrap();
-            std::fs::write(folder.join("project.godot"), "").unwrap();
-        }
+        std::fs::create_dir(&other).unwrap();
+        std::fs::write(other.join("project.godot"), "").unwrap();
         let godot = Path::new("godot");
         assert_eq!(launch(&other, Some(godot)), Some((godot.into(), vec!["--path".into(), other.to_str().unwrap().into()])));
-        assert_eq!(launch(&app, Some(godot)), None);
+        assert_eq!(godot_launch(&app, godot), None);
     }
 
     /// The child runs inside the project, so an app path passed to it must survive that cwd change.

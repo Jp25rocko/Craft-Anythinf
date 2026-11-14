@@ -100,6 +100,9 @@ fn sign_in_args(opts: &LaunchOptions) -> Vec<String> {
     // Only this profile has password saving turned off (`prepare_sign_in_profile`): never let a
     // copied `Local State` pick another one.
     args.push(format!("--profile-directory={}", super::site_sign_in::SIGN_IN_PROFILE));
+    // Chromium needs an explicit session restore on macOS to reload session-only cookies. The
+    // copied profile excludes session and tab files, so old pages are not reopened.
+    args.push("--restore-last-session".into());
     args
 }
 
@@ -1186,6 +1189,7 @@ mod tests {
         for opts in [&seeded, &window] {
             let args = sign_in_args(opts);
             assert!(args.contains(&pinned), "{args:?}");
+            assert!(args.iter().any(|a| a == "--restore-last-session"), "{args:?}");
             assert_eq!(args.iter().any(|a| a == "--password-store=basic"), cfg!(target_os = "linux"), "{args:?}");
         }
         assert!(sign_in_args(&LaunchOptions::default()).is_empty());

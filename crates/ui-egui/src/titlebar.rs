@@ -158,11 +158,20 @@ pub fn show(app: &mut CraftApp, ui: &mut Ui) {
         }
         ui.label(theme::label_text("Craft Anything", label(12.0, s)).color(t.text).strong());
         #[cfg(not(target_arch = "wasm32"))]
-        ui.menu_button(tr("Help"), |ui| {
-            if ui.button(tr("Check for Updates…")).clicked() {
-                app.updates.check(ui.ctx());
-                ui.close();
-            }
+        ui.scope(|ui| {
+            // The menu button belongs to the unzoomed chrome; its popup belongs to the app.
+            let popup_style = ui.style().clone();
+            let mut font = egui::TextStyle::Button.resolve(ui.style());
+            font.size *= s;
+            ui.spacing_mut().interact_size *= s;
+            ui.spacing_mut().button_padding *= s;
+            ui.menu_button(RichText::new(tr("Help")).font(font), |ui| {
+                ui.set_style(popup_style);
+                if ui.button(tr("Check for Updates…")).clicked() {
+                    app.updates.check(ui.ctx());
+                    ui.close();
+                }
+            });
         });
         let in_project = app.state.screen == Screen::Project;
         let project = if in_project { app.workspace.as_ref().map(|w| w.manifest.name.clone()) } else { app.view.project.clone() };
