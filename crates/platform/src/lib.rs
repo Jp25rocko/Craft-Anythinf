@@ -17,7 +17,7 @@ pub mod which;
 pub mod window;
 
 pub use capture::{Capture, Event, EventKind, Sig, Spec as CaptureSpec};
-pub use fs::{backup_once, write_atomic, write_atomic_private};
+pub use fs::{backup_once, set_private_dir, write_atomic, write_atomic_private};
 pub use process::{Cancel, Ended, Launch, Launched, LineSink, Output, Process, RunningProcess, StdinMode, open_path};
 pub use which::{cli_file_name, self_cli_path, which, which_all};
 

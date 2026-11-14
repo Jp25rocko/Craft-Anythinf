@@ -492,8 +492,12 @@ impl Settings {
         // `config.toml` can hold plugin headers and environment (API keys), so it is owner-only,
         // as is the folder that holds it (audit: craft-anything #2).
         craft_anything_platform::write_atomic_private(path, text.as_bytes())?;
-        if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
-            craft_anything_platform::set_private_dir(dir)?;
+        // The file is saved by now: a folder whose mode can't be changed must not report the save
+        // as failed, or the caller keeps the old settings in memory beside the new ones on disk.
+        if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty())
+            && let Err(e) = craft_anything_platform::set_private_dir(dir)
+        {
+            log::warn!("{} was saved, but its folder couldn't be made private: {e}", path.display());
         }
         Ok(())
     }
