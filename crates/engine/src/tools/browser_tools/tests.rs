@@ -499,6 +499,21 @@ fn walkthrough_keeps_network_from_every_step() {
 }
 
 #[test]
+fn walkthrough_evidence_names_the_visited_site_not_the_starting_tab() {
+    // The picked tab starts on https://app.test/; the goto takes the page to /home.
+    // The evidence must name the site the run actually examined, not the tab it started on.
+    let (url, _) = fake_cdp();
+    let e = Engine::new(crate::testing::session());
+    let v = walkthrough(&e, json!({"cdp_endpoint": url, "actions": [{"kind": "goto", "url": "https://app.test/after-goto", "wait_ms": 50}]})).unwrap();
+    assert_eq!(v["result"]["start_url"], "https://app.test/", "the starting tab is still recorded");
+    let step_url = v["result"]["steps"][0]["url"].as_str().unwrap().to_string();
+    assert_ne!(step_url, "https://app.test/", "the run navigated");
+    assert_eq!(v["subject"]["name"].as_str().unwrap(), step_url, "the evidence names the visited site");
+    assert_eq!(v["locations"][0]["value"].as_str().unwrap(), step_url);
+    assert!(v["summary"].as_str().unwrap().contains(&step_url), "{}", v["summary"]);
+}
+
+#[test]
 fn walkthrough_records_requested_event_families() {
     let (url, _) = fake_cdp();
     let e = Engine::new(crate::testing::session());

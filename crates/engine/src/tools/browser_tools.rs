@@ -3207,6 +3207,10 @@ fn web_walkthrough_record(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput
 
     let mut steps: Vec<Value> = Vec::new();
     let mut aborted: Option<String> = None;
+    // The evidence names the site the run actually examined (the last page a step left
+    // the tab on), not the tab it started on: `start_url` is kept in the result, but
+    // naming it as the website misreports every run that navigates elsewhere.
+    let mut last_url = start_url.clone();
     for (i, WalkthroughStep { step_id, action }) in p.actions.iter().enumerate() {
         if dl.expired() {
             aborted = Some("the overall deadline passed".into());
@@ -3223,7 +3227,9 @@ fn web_walkthrough_record(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput
         if let Ok(hist) = client.call("Page.getNavigationHistory", json!({}), None, &step_dl) {
             let idx = hist.get("currentIndex").and_then(Value::as_u64).unwrap_or(0) as usize;
             if let Some(entry) = hist.get("entries").and_then(Value::as_array).and_then(|a| a.get(idx)) {
-                step["url"] = json!(secrets.text(&web_common::sanitize_url(entry.get("url").and_then(Value::as_str).unwrap_or_default())));
+                let page_url = secrets.text(&web_common::sanitize_url(entry.get("url").and_then(Value::as_str).unwrap_or_default()));
+                last_url.clone_from(&page_url);
+                step["url"] = json!(page_url);
             }
         }
         if p.screenshot_each_step
@@ -3280,7 +3286,7 @@ fn web_walkthrough_record(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput
 
     let ok_steps = steps.iter().filter(|s| s["status"] == "ok").count();
     let summary =
-        format!("Ran {} of {} scripted step(s) on {start_url}{}.", ok_steps, p.actions.len(), aborted.as_ref().map(|a| format!(" ({a})")).unwrap_or_default());
+        format!("Ran {} of {} scripted step(s) on {last_url}{}.", ok_steps, p.actions.len(), aborted.as_ref().map(|a| format!(" ({a})")).unwrap_or_default());
     let result = json!({
         "browser": {"product": browser.product, "started_by": if browser.launched { "craft-anything" } else { "external" }, "cleanup": if browser.launched { "closed" } else { "disconnected" }},
         "start_url": start_url,
@@ -3296,7 +3302,7 @@ fn web_walkthrough_record(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput
         "secrets_hidden": p.hidden_values.len(),
         "secret_redactions": secrets.redactions,
     });
-    let mut b = EvidenceBuilder::new("web_walkthrough_record", Subject { kind: "website".into(), sha256: None, name: Some(start_url.clone()) }, browser_env(ctx.session.clean_room(), &browser))
+    let mut b = EvidenceBuilder::new("web_walkthrough_record", Subject { kind: "website".into(), sha256: None, name: Some(last_url.clone()) }, browser_env(ctx.session.clean_room(), &browser))
         .params(json!({"endpoint": browser.endpoint.origin, "launched": browser.launched, "action_count": p.actions.len(), "sensitive_value_declarations": p.hidden_values.len()}))
         .result(result)
         .summary(summary)
@@ -3309,7 +3315,7 @@ fn web_walkthrough_record(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput
             Limitation::new("values_not_kept", "Request/response bodies are reduced to outlines, cookies and auth headers are dropped, and declared secrets are redacted in every encoding.")
         })
         .coverage(Coverage::complete(p.actions.len() as u64))
-        .location(Location::new("url", start_url));
+        .location(Location::new("url", last_url));
     if p.hidden_values.iter().any(|s| !s.is_empty()) {
         b = b.limitation(Limitation::new("secrets_redacted", format!("{} occurrence(s) of declared values were redacted", secrets.redactions)));
     }
