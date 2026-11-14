@@ -10,6 +10,7 @@
 use super::native_common::spec;
 use super::web_common::{self, Browser, LaunchOptions, Secrets};
 use crate::tool::{Ctx, Effects, Requires, ToolOutput, ToolSpec, Toolset, parse_params, schema_of};
+use craft_anything_analysis::audio::{self, Edge, EnvelopeSample, Fingerprint, GraphSignature};
 use craft_anything_engines::cdp::{self, CdpClient, Deadline, PAGE_MAX_MESSAGE};
 use craft_anything_evidence::{Authority, Confidence, Coverage, CoverageStatus, EvidenceBuilder, Limitation, Location, Subject, ToolError};
 use schemars::JsonSchema;
@@ -139,6 +140,28 @@ pub fn specs() -> Vec<ToolSpec> {
             Requires::Nothing,
             schema_of::<script_check::WalkthroughCheckParams>,
             script_check::web_walkthrough_check,
+        ),
+        spec(
+            "web_audio_fingerprint",
+            "Fingerprint an audio scene",
+            "Turn a web_audio_capture result (the evidence record, its id, or its raw {graph, spectrum, rms, mixer_state, mixer_envelope} object) — or an inline spectrum and RMS envelope — into a versioned audio fingerprint: 48 log-spaced spectrum bins, a 1 Hz loudness envelope, the audio-graph signature and the page's mixer state. Pure computation over evidence already in hand; no browser.",
+            "Record what a web page's audio sounds like, so two captures can be compared.",
+            Toolset::Browser,
+            Effects::EVIDENCE,
+            Requires::Nothing,
+            schema_of::<FingerprintAudioParams>,
+            web_audio_fingerprint,
+        ),
+        spec(
+            "web_audio_compare",
+            "Compare two audio fingerprints",
+            "Compare two audio fingerprints (from web_audio_fingerprint or web_audio_offline_render): log-bin cosine, RMS-envelope correlation, graph differences, mixer-envelope distance, and whether the two scenes are alike (spectral cosine and RMS correlation within their tolerances; 0.85 and 0.80 by default). Pure computation; no browser.",
+            "Measure whether a rebuilt audio scene sounds like the original.",
+            Toolset::Browser,
+            Effects::EVIDENCE,
+            Requires::Nothing,
+            schema_of::<CompareAudioParams>,
+            web_audio_compare,
         ),
     ]
 }
@@ -1595,6 +1618,385 @@ fn load_png(ctx: &Ctx<'_>, v: &Value, what: &str) -> Result<Vec<u8>, ToolError> 
     let b64 =
         ev.result.pointer("/screenshot/base64").and_then(Value::as_str).ok_or_else(|| ToolError::invalid(format!("{what} evidence has no screenshot")))?;
     web_common::b64_decode(b64)
+}
+
+// ---------------------------------------------------------------------------------------------
+// web_audio_fingerprint / web_audio_compare (pure computation)
+
+/// One interaction-traced mixer reading, as a capture or a caller records it.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MixerSample {
+    /// Milliseconds since the trace started.
+    pub t_ms: u64,
+    /// The mixer layer this reading belongs to.
+    pub layer_id: String,
+    /// Layer gain at the reading.
+    pub gain: f32,
+    /// Stereo pan at the reading.
+    pub pan: f32,
+}
+
+impl From<MixerSample> for EnvelopeSample {
+    fn from(sample: MixerSample) -> Self {
+        EnvelopeSample { t_ms: sample.t_ms, layer_id: sample.layer_id, gain: sample.gain, pan: sample.pan }
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FingerprintAudioParams {
+    /// A capture from web_audio_capture: the evidence record, {"kind":"saved","evidence_id":…}, its
+    /// id, or the raw result object {graph, spectrum, rms, mixer_state, mixer_envelope}.
+    #[serde(default)]
+    pub capture: Option<Value>,
+    /// Raw spectrum values to quantise into 48 log-spaced bins (inline alternative to `capture`).
+    #[serde(default)]
+    pub spectrum: Option<Vec<f32>>,
+    /// One RMS value per second of capture.
+    #[serde(default)]
+    pub rms: Option<Vec<f32>>,
+    /// The audio graph signature: {"node_counts": {"gain": 2}, "edges": [{"from": …, "to": …, "kind": "audio"}]}.
+    #[serde(default)]
+    pub graph: Option<Value>,
+    /// The page's mixer state object, e.g. {"scenario_id": "focus"}.
+    #[serde(default)]
+    pub mixer_state: Option<Value>,
+    /// Interaction-traced readings: [{"t_ms": 0, "layer_id": "pad", "gain": 0.4, "pan": 0.0}].
+    #[serde(default)]
+    pub mixer_envelope: Option<Vec<MixerSample>>,
+    /// When the capture happened, in Unix milliseconds.
+    #[serde(default)]
+    pub captured_at_ms: Option<u64>,
+}
+
+fn web_audio_fingerprint(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError> {
+    let p: FingerprintAudioParams = parse_params(params)?;
+    let has_input =
+        p.capture.is_some() || p.spectrum.is_some() || p.rms.is_some() || p.graph.is_some() || p.mixer_state.is_some() || p.mixer_envelope.is_some();
+    if !has_input {
+        return Err(ToolError::invalid("there is no audio capture to fingerprint")
+            .with_remediation("Pass `capture` from web_audio_capture, or inline `spectrum`/`rms`/`graph`/`mixer_state`."));
+    }
+
+    let mut spectrum = p.spectrum.unwrap_or_default();
+    let mut rms = p.rms.unwrap_or_default();
+    let mut graph = p.graph.unwrap_or(Value::Null);
+    let mut mixer = p.mixer_state.unwrap_or(Value::Null);
+    let mut envelope: Option<Vec<EnvelopeSample>> = p.mixer_envelope.map(|samples| samples.into_iter().map(EnvelopeSample::from).collect());
+    let mut captured_at_ms = p.captured_at_ms.unwrap_or(0);
+    let mut deep_mode = false;
+    let mut capture_id: Option<String> = None;
+    let mut source = "inline";
+    if let Some(value) = &p.capture {
+        let (id, result, deep) = resolve_audio_capture(ctx, value)?;
+        source = if id.is_some() { "a capture's evidence" } else { "a capture object" };
+        deep_mode = deep;
+        capture_id = id;
+        if spectrum.is_empty() {
+            spectrum = number_list(&result, "spectrum")?;
+        }
+        if rms.is_empty() {
+            rms = number_list(&result, "rms")?;
+        }
+        if graph.is_null() {
+            graph = result.get("graph").cloned().unwrap_or(Value::Null);
+        }
+        if mixer.is_null() {
+            mixer = result.get("mixer_state").cloned().unwrap_or(Value::Null);
+        }
+        if envelope.is_none() {
+            envelope = Some(mixer_samples(result.get("mixer_envelope"), "the capture's mixer_envelope")?);
+        }
+        if captured_at_ms == 0 {
+            captured_at_ms = result.get("captured_at_ms").and_then(Value::as_u64).unwrap_or(0);
+        }
+    }
+    let envelope = envelope.unwrap_or_default();
+
+    let mut fingerprint = audio::fingerprint_from_capture(&spectrum, &rms, graph, mixer, &envelope)?;
+    fingerprint.deep_mode = deep_mode;
+    fingerprint.captured_at_ms = captured_at_ms;
+    let scenario = if fingerprint.scenario_id.is_empty() { "an audio scene".to_string() } else { fingerprint.scenario_id.clone() };
+    let summary = format!(
+        "Fingerprinted {scenario} from {source}: {} log bin(s), {} RMS value(s), {} graph node kind(s), {} mixer sample(s).",
+        fingerprint.log_bins.len(),
+        fingerprint.rms_envelope.len(),
+        fingerprint.graph_signature.node_counts.len(),
+        fingerprint.mixer_envelope.len()
+    );
+    let params = json!({
+        "source": source,
+        "capture_evidence_id": capture_id,
+        "spectrum_values": spectrum.len(),
+        "rms_values": fingerprint.rms_envelope.len(),
+        "deep_mode": deep_mode,
+        "captured_at_ms": captured_at_ms,
+    });
+    let mut builder = EvidenceBuilder::new(
+        "web_audio_fingerprint",
+        Subject { kind: "audio-scene".into(), sha256: None, name: Some(scenario) },
+        super::artifact_tools::env(ctx),
+    )
+    .params(params)
+    .result(json!({"fingerprint": fingerprint}))
+    .summary(summary)
+    .confidence(Confidence::Derived)
+    .limitation(Limitation::new("summary_not_a_recording", "A fingerprint is a summary, not a recording: it keeps no audio samples."))
+    .coverage(Coverage::complete(1));
+    if let Some(id) = capture_id {
+        builder = builder.link(id);
+    }
+    Ok(ToolOutput::evidence(builder.build()?))
+}
+
+/// The raw capture object behind `capture` (the evidence record's result, or the object itself), the
+/// evidence id when there was one, and whether the capture ran in Deep mode.
+fn resolve_audio_capture(ctx: &Ctx<'_>, value: &Value) -> Result<(Option<String>, Value, bool), ToolError> {
+    let looks_like_evidence =
+        value.is_string() || value.get("kind").and_then(Value::as_str) == Some("saved") || (value.get("operation").is_some() && value.get("result").is_some());
+    if !looks_like_evidence {
+        if !value.is_object() {
+            return Err(ToolError::invalid("`capture` isn't a capture object")
+                .with_remediation("Pass the evidence web_audio_capture returned, or its {graph, spectrum, rms, mixer_state} object."));
+        }
+        return Ok((None, value.clone(), false));
+    }
+    let ev = super::artifact_tools::resolve_evidence_input(ctx, value, &["web_audio_capture"])?;
+    let deep = !ev.environment.clean_room;
+    Ok((Some(ev.id), ev.result, deep))
+}
+
+/// A list of numbers from a capture object; a missing or null key is an empty list.
+fn number_list(capture: &Value, key: &str) -> Result<Vec<f32>, ToolError> {
+    match capture.get(key) {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(value) => serde_json::from_value(value.clone()).map_err(|error| {
+            ToolError::invalid(format!("the capture's `{key}` isn't a list of numbers: {error}"))
+                .with_remediation("Pass the numbers web_audio_capture returned for `spectrum` and `rms`.")
+        }),
+    }
+}
+
+/// Interaction-traced mixer readings from a capture object or a bare list.
+fn mixer_samples(value: Option<&Value>, what: &str) -> Result<Vec<EnvelopeSample>, ToolError> {
+    let Some(value) = value.filter(|value| !value.is_null()) else { return Ok(Vec::new()) };
+    let rows: Vec<MixerSample> = serde_json::from_value(value.clone()).map_err(|error| {
+        ToolError::invalid(format!("{what} isn't a list of mixer readings: {error}"))
+            .with_remediation("Pass [{t_ms, layer_id, gain, pan}] samples, or omit the envelope.")
+    })?;
+    Ok(rows.into_iter().map(EnvelopeSample::from).collect())
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CompareAudioParams {
+    /// The earlier fingerprint: web_audio_fingerprint evidence, a web_audio_offline_render result,
+    /// {"kind":"saved","evidence_id":…}, or a bare fingerprint object.
+    pub before: Value,
+    /// The later fingerprint, in the same forms.
+    pub after: Value,
+    /// How far the log-bin cosine may fall short of 1.0 and still count as alike (0..=1, default 0.15).
+    #[serde(default = "d_log_bin_tolerance")]
+    pub log_bin_tolerance: f64,
+    /// How far the RMS-envelope cosine may fall short of 1.0 and still count as alike (0..=1, default 0.20).
+    #[serde(default = "d_rms_tolerance")]
+    pub rms_tolerance: f64,
+}
+
+fn d_log_bin_tolerance() -> f64 {
+    0.15
+}
+
+fn d_rms_tolerance() -> f64 {
+    0.20
+}
+
+fn web_audio_compare(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError> {
+    let p: CompareAudioParams = parse_params(params)?;
+    for (name, value) in [("log_bin_tolerance", p.log_bin_tolerance), ("rms_tolerance", p.rms_tolerance)] {
+        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+            return Err(ToolError::invalid(format!("{name} must be 0..=1"))
+                .with_remediation("Use 0.15 for the spectrum and 0.20 for RMS unless you need a looser or tighter match."));
+        }
+    }
+    let (before, before_id) = parse_fingerprint_input(ctx, &p.before, "before")?;
+    let (after, after_id) = parse_fingerprint_input(ctx, &p.after, "after")?;
+
+    let log_bin_cosine = audio::spectral_cosine(&before.log_bins, &after.log_bins)?;
+    let rms_correlation = rms_correlation(&before.rms_envelope, &after.rms_envelope);
+    let envelope_distance = audio::envelope_distance(&before.mixer_envelope, &after.mixer_envelope);
+    let graph_diff = graph_diff(&before.graph_signature, &after.graph_signature);
+    let likeness_pass = log_bin_cosine >= 1.0 - p.log_bin_tolerance && rms_correlation >= 1.0 - p.rms_tolerance;
+    let low_energy = !has_energy(&before.log_bins) || !has_energy(&after.log_bins) || !has_energy(&before.rms_envelope) || !has_energy(&after.rms_envelope);
+    let graphs_differ = graph_diff["same"] != true;
+    let summary = format!(
+        "The two audio fingerprints {}: log-bin cosine {log_bin_cosine:.3}, RMS correlation {rms_correlation:.3}, mixer-envelope distance {envelope_distance:.3}{}.",
+        if likeness_pass { "are alike" } else { "differ" },
+        if graphs_differ { "; their audio graphs differ" } else { "" }
+    );
+    let mut builder = EvidenceBuilder::new(
+        "web_audio_compare",
+        Subject { kind: "comparison".into(), sha256: None, name: Some("audio fingerprints".into()) },
+        super::artifact_tools::env(ctx),
+    )
+    .params(json!({
+        "before": before_id,
+        "after": after_id,
+        "log_bin_tolerance": p.log_bin_tolerance,
+        "rms_tolerance": p.rms_tolerance,
+    }))
+    .result(json!({
+        "log_bin_cosine": log_bin_cosine,
+        "rms_correlation": rms_correlation,
+        "graph_diff": graph_diff,
+        "envelope_distance": envelope_distance,
+        "likeness_pass": likeness_pass,
+    }))
+    .summary(summary)
+    .confidence(Confidence::Derived)
+    .limitation(Limitation::new(
+        "spectral_summary_only",
+        "The verdict compares spectral shape and loudness: it cannot hear timbre, stereo image or content beyond the 1 Hz envelope.",
+    ))
+    .coverage(Coverage::complete(1));
+    if low_energy {
+        builder = builder.limitation(Limitation::new(
+            "low_energy",
+            "At least one side has no spectral or loudness energy (silence, or an analyser that returned zeros); the verdict cannot pass.",
+        ));
+    }
+    if before.mixer_envelope.len() != after.mixer_envelope.len() && !before.mixer_envelope.is_empty() && !after.mixer_envelope.is_empty() {
+        builder = builder.limitation(Limitation::new(
+            "envelope_resampled",
+            "The two mixer envelopes have different lengths and were proportionally resampled before their distance was measured.",
+        ));
+    }
+    if let Some(id) = before_id {
+        builder = builder.link(id);
+    }
+    if let Some(id) = after_id {
+        builder = builder.link(id);
+    }
+    Ok(ToolOutput::evidence(builder.build()?))
+}
+
+/// A fingerprint from a tool result ({fingerprint: {…}} or a bare fingerprint), migrated to a
+/// supported version, with the evidence id it came from when it was an evidence record.
+fn parse_fingerprint_input(ctx: &Ctx<'_>, value: &Value, what: &str) -> Result<(Fingerprint, Option<String>), ToolError> {
+    let looks_like_evidence =
+        value.is_string() || value.get("kind").and_then(Value::as_str) == Some("saved") || (value.get("operation").is_some() && value.get("result").is_some());
+    let (fingerprint, id) = if looks_like_evidence {
+        let ev = super::artifact_tools::resolve_evidence_input(ctx, value, &["web_audio_fingerprint", "web_audio_offline_render"])?;
+        let fingerprint = fingerprint_object(&ev.result).ok_or_else(|| {
+            ToolError::invalid(format!("{what} evidence {} carries no audio fingerprint", ev.id))
+                .with_remediation("Pass the result of web_audio_fingerprint or web_audio_offline_render.")
+        })?;
+        (fingerprint, Some(ev.id))
+    } else {
+        (value.get("fingerprint").cloned().unwrap_or_else(|| value.clone()), None)
+    };
+    let fingerprint: Fingerprint = serde_json::from_value(fingerprint).map_err(|error| {
+        ToolError::invalid(format!("{what} isn't an audio fingerprint: {error}"))
+            .with_remediation("Pass the evidence a fingerprint tool returned, or its `fingerprint` object.")
+    })?;
+    Ok((audio::migrate(fingerprint)?, id))
+}
+
+/// The fingerprint object inside a result: `{fingerprint: {…}}`, or the result itself when it already
+/// is a fingerprint (a bare object or an offline render's `{fingerprint, rendered_ms}`).
+fn fingerprint_object(result: &Value) -> Option<Value> {
+    result.get("fingerprint").filter(|value| value.is_object()).cloned().or_else(|| result.is_object().then(|| result.clone()))
+}
+
+/// True when any value is finite and non-zero.
+fn has_energy(values: &[f32]) -> bool {
+    values.iter().any(|value| value.is_finite() && *value != 0.0)
+}
+
+/// Cosine similarity of two RMS envelopes, in `-1..=1`.
+///
+/// Scale-invariant, so a louder recording of the same shape still matches; a mirrored shape
+/// (0→1 against 1→0) scores low. Envelopes of different lengths are linearly resampled to the
+/// longer one first (98 vs 100 readings compares, never panics). Zero energy on either side
+/// scores `0.0` rather than a NaN.
+fn rms_correlation(a: &[f32], b: &[f32]) -> f64 {
+    let len = a.len().max(b.len());
+    if len == 0 {
+        return 0.0;
+    }
+    let left = resample_envelope(a, len);
+    let right = resample_envelope(b, len);
+    let mut dot = 0.0f64;
+    let mut left_norm = 0.0f64;
+    let mut right_norm = 0.0f64;
+    for (left, right) in left.iter().zip(right.iter()) {
+        let left = if left.is_finite() { f64::from(*left) } else { 0.0 };
+        let right = if right.is_finite() { f64::from(*right) } else { 0.0 };
+        dot += left * right;
+        left_norm += left * left;
+        right_norm += right * right;
+    }
+    if left_norm == 0.0 || right_norm == 0.0 {
+        return 0.0;
+    }
+    let cosine = dot / (left_norm.sqrt() * right_norm.sqrt());
+    if cosine.is_finite() { cosine.clamp(-1.0, 1.0) } else { 0.0 }
+}
+
+/// Linearly resample an envelope to `len` values; an empty envelope reads as silence.
+fn resample_envelope(points: &[f32], len: usize) -> Vec<f32> {
+    if len == 0 {
+        return Vec::new();
+    }
+    if points.is_empty() {
+        return vec![0.0; len];
+    }
+    if points.len() == len {
+        return points.to_vec();
+    }
+    let last = points.len().saturating_sub(1);
+    let mut out = Vec::with_capacity(len);
+    for index in 0..len {
+        let position = ((index as f64 + 0.5) * points.len() as f64 / len as f64 - 0.5).clamp(0.0, last as f64);
+        let lo = position.floor() as usize;
+        let hi = (lo + 1).min(last);
+        let weight = (position - lo as f64) as f32;
+        let low = points.get(lo).copied().unwrap_or(0.0);
+        let high = points.get(hi).copied().unwrap_or(0.0);
+        out.push(low + (high - low) * weight);
+    }
+    out
+}
+
+/// What changed between two audio graphs: node counts per kind, and connections.
+fn graph_diff(before: &GraphSignature, after: &GraphSignature) -> Value {
+    let mut kinds: std::collections::BTreeSet<&String> = before.node_counts.keys().collect();
+    kinds.extend(after.node_counts.keys());
+    let mut added_nodes = serde_json::Map::new();
+    let mut removed_nodes = serde_json::Map::new();
+    for kind in kinds {
+        let was = before.node_counts.get(kind).copied().unwrap_or(0);
+        let now = after.node_counts.get(kind).copied().unwrap_or(0);
+        if now > was {
+            added_nodes.insert(kind.clone(), json!(now - was));
+        }
+        if was > now {
+            removed_nodes.insert(kind.clone(), json!(was - now));
+        }
+    }
+    let before_edges: std::collections::BTreeSet<&Edge> = before.edges.iter().collect();
+    let after_edges: std::collections::BTreeSet<&Edge> = after.edges.iter().collect();
+    let added_edges: Vec<&Edge> = after_edges.difference(&before_edges).copied().collect();
+    let removed_edges: Vec<&Edge> = before_edges.difference(&after_edges).copied().collect();
+    let same = added_nodes.is_empty() && removed_nodes.is_empty() && added_edges.is_empty() && removed_edges.is_empty();
+    json!({
+        "same": same,
+        "added_nodes": added_nodes,
+        "removed_nodes": removed_nodes,
+        "added_edges": added_edges,
+        "removed_edges": removed_edges,
+    })
 }
 
 // ---------------------------------------------------------------------------------------------

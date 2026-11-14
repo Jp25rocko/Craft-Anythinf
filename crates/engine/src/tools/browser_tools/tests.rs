@@ -1058,3 +1058,138 @@ fn same_origin_loopback_source_maps_are_fetched() {
     assert!(other_seen.lock().unwrap().is_empty());
     assert_eq!(seen.lock().unwrap().len(), 2);
 }
+
+// ---- web_audio_fingerprint / web_audio_compare ----
+
+/// A web_audio_capture evidence record, in the shape that tool returns (no browser involved).
+fn capture_evidence() -> Value {
+    use craft_anything_evidence::{Authority, Confidence, EvidenceBuilder, Subject};
+    let ev = EvidenceBuilder::new(
+        "web_audio_capture",
+        Subject { kind: "audio-scene".into(), sha256: None, name: Some("focus".into()) },
+        crate::tools::web_common::cdp_env(false, Some("HeadlessChrome/120".into())),
+    )
+    .result(json!({
+        "graph": {"node_counts": {"gain": 2}, "edges": [{"from": "osc", "to": "gain", "kind": "audio"}]},
+        "spectrum": [1.0, 2.0, 3.0],
+        "rms": [0.1, 0.2],
+        "mixer_state": {"scenario_id": "focus"},
+        "mixer_envelope": [{"t_ms": 0, "layer_id": "pad", "gain": 0.2, "pan": 0.0}],
+        "network_outline": {"request_count": 0}
+    }))
+    .summary("x")
+    .confidence(Confidence::Observed)
+    .authority(Authority::OurRun)
+    .build()
+    .unwrap();
+    serde_json::to_value(ev).unwrap()
+}
+
+#[test]
+fn fingerprint_of_inline_capture_and_compare_roundtrip() {
+    let e = Engine::new(crate::testing::session());
+    let fp = call(
+        &e,
+        "web_audio_fingerprint",
+        json!({"spectrum": [1.0, 2.0, 3.0], "rms": [0.1, 0.2], "graph": {"node_counts": {"gain": 2}}, "mixer_state": {"scenario_id": "focus"}}),
+    )
+    .unwrap();
+    let f = &fp["result"]["fingerprint"];
+    assert_eq!(f["version"], 1);
+    assert_eq!(f["scenario_id"], "focus");
+    assert_eq!(f["log_bins"].as_array().map(Vec::len), Some(48));
+    let rms: Vec<f64> = f["rms_envelope"].as_array().unwrap().iter().filter_map(Value::as_f64).collect();
+    assert_eq!(rms.len(), 2);
+    assert!((rms[0] - 0.1).abs() < 1e-6 && (rms[1] - 0.2).abs() < 1e-6, "{rms:?}");
+    assert_eq!(f["graph_signature"]["node_counts"]["gain"], 2);
+
+    let cmp = call(&e, "web_audio_compare", json!({"before": fp.clone(), "after": fp, "log_bin_tolerance": 0.15})).unwrap();
+    assert_eq!(cmp["result"]["likeness_pass"], true, "{}", cmp["result"]);
+    assert!((cmp["result"]["log_bin_cosine"].as_f64().unwrap_or(0.0) - 1.0).abs() < 1e-9);
+    assert!((cmp["result"]["rms_correlation"].as_f64().unwrap_or(0.0) - 1.0).abs() < 1e-9);
+    assert_eq!(cmp["result"]["graph_diff"]["same"], true);
+    assert_eq!(cmp["result"]["envelope_distance"].as_f64(), Some(0.0));
+}
+
+#[test]
+fn fingerprint_consumes_a_capture_evidence_record() {
+    let e = Engine::new(crate::testing::session());
+    let capture = capture_evidence();
+    let capture_id = capture["id"].as_str().unwrap().to_string();
+    let fp = call(&e, "web_audio_fingerprint", json!({"capture": capture})).unwrap();
+    let f = &fp["result"]["fingerprint"];
+    assert_eq!(f["scenario_id"], "focus");
+    assert_eq!(f["graph_signature"]["node_counts"]["gain"], 2);
+    let rms: Vec<f64> = f["rms_envelope"].as_array().unwrap().iter().filter_map(Value::as_f64).collect();
+    assert_eq!(rms.len(), 2);
+    assert!((rms[0] - 0.1).abs() < 1e-6 && (rms[1] - 0.2).abs() < 1e-6, "{rms:?}");
+    assert_eq!(f["mixer_envelope"][0]["layer_id"], "pad");
+    assert_eq!(f["deep_mode"], true, "the capture was recorded in Deep mode");
+    assert_eq!(fp["links"], json!([capture_id.clone()]));
+    assert_eq!(fp["params"]["capture_evidence_id"], capture_id);
+}
+
+#[test]
+fn a_silent_capture_fails_likeness_with_a_low_energy_limitation() {
+    let e = Engine::new(crate::testing::session());
+    let silent = json!({"spectrum": [], "rms": [0.0, 0.0], "graph": {}, "mixer_state": {}});
+    let fp = call(&e, "web_audio_fingerprint", silent).unwrap();
+    let cmp = call(&e, "web_audio_compare", json!({"before": fp.clone(), "after": fp})).unwrap();
+    assert_eq!(cmp["result"]["likeness_pass"], false);
+    assert_eq!(cmp["result"]["log_bin_cosine"].as_f64(), Some(0.0), "zero energy is not a NaN");
+    assert_eq!(cmp["result"]["rms_correlation"].as_f64(), Some(0.0));
+    assert!(cmp["limitations"].as_array().unwrap().iter().any(|l| l["code"] == "low_energy"), "{}", cmp["limitations"]);
+}
+
+#[test]
+fn mirrored_rms_envelopes_fail_likeness() {
+    let e = Engine::new(crate::testing::session());
+    let rising = json!({"spectrum": [1.0, 2.0, 3.0], "rms": [0.0, 0.25, 0.5, 0.75, 1.0]});
+    let falling = json!({"spectrum": [1.0, 2.0, 3.0], "rms": [1.0, 0.75, 0.5, 0.25, 0.0]});
+    let a = call(&e, "web_audio_fingerprint", rising).unwrap();
+    let b = call(&e, "web_audio_fingerprint", falling).unwrap();
+    let cmp = call(&e, "web_audio_compare", json!({"before": a, "after": b})).unwrap();
+    assert!((cmp["result"]["log_bin_cosine"].as_f64().unwrap_or(0.0) - 1.0).abs() < 1e-9, "the spectrum is identical");
+    assert!(cmp["result"]["rms_correlation"].as_f64().unwrap_or(1.0) < 0.8, "{}", cmp["result"]["rms_correlation"]);
+    assert_eq!(cmp["result"]["likeness_pass"], false, "a mirrored loudness shape is not the same scene");
+}
+
+#[test]
+fn mismatched_log_bin_counts_are_bad_input() {
+    let e = Engine::new(crate::testing::session());
+    let a = json!({"version": 1, "log_bins": [1.0, 2.0], "rms_envelope": [0.5]});
+    let b = json!({"version": 1, "log_bins": [1.0, 2.0, 3.0], "rms_envelope": [0.5]});
+    let err = call(&e, "web_audio_compare", json!({"before": a, "after": b})).unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadInput, "{}", err.message);
+    assert!(err.remediation.unwrap_or_default().contains("bins"), "{}", err.message);
+}
+
+#[test]
+fn oversized_or_unknown_fingerprints_are_typed_errors() {
+    let e = Engine::new(crate::testing::session());
+    let good = json!({"version": 1, "log_bins": [1.0, 2.0], "rms_envelope": [0.5]});
+    let oversized = json!({"version": 1, "log_bins": [1.0, 2.0], "rms_envelope": vec![0.1; 601]});
+    let err = call(&e, "web_audio_compare", json!({"before": good.clone(), "after": oversized})).unwrap_err();
+    assert_eq!(err.code, ErrorCode::OverLimit, "{}", err.message);
+
+    let mut future = good.clone();
+    future["version"] = json!(99);
+    let err = call(&e, "web_audio_compare", json!({"before": good.clone(), "after": future})).unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadInput, "{}", err.message);
+
+    let err = call(&e, "web_audio_compare", json!({"before": good.clone(), "after": good, "log_bin_tolerance": 1.5})).unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadInput, "{}", err.message);
+    assert!(err.message.contains("log_bin_tolerance"), "{}", err.message);
+}
+
+#[test]
+fn mismatched_envelope_lengths_still_compare() {
+    let e = Engine::new(crate::testing::session());
+    let envelope = |n: usize| -> Vec<Value> { (0..n).map(|i| json!({"t_ms": i * 10, "layer_id": "pad", "gain": i as f64 / n as f64, "pan": 0.0})).collect() };
+    let a = call(&e, "web_audio_fingerprint", json!({"spectrum": [1.0, 2.0], "rms": [0.5], "mixer_envelope": envelope(100)})).unwrap();
+    let b = call(&e, "web_audio_fingerprint", json!({"spectrum": [1.0, 2.0], "rms": [0.5], "mixer_envelope": envelope(98)})).unwrap();
+    let cmp = call(&e, "web_audio_compare", json!({"before": a, "after": b})).unwrap();
+    let distance = cmp["result"]["envelope_distance"].as_f64().unwrap_or(f64::NAN);
+    assert!(distance.is_finite() && distance < 0.02, "resampled distance {distance}");
+    assert!(cmp["limitations"].as_array().unwrap().iter().any(|l| l["code"] == "envelope_resampled"), "{}", cmp["limitations"]);
+}
