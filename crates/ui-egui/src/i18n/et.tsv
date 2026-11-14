@@ -1491,3 +1491,4 @@ You're up to date.	Sul on uusim versioon.
 {version} is available.	Saadaval on {version}.
 Forget a website sign-in	Unusta veebisaidi sisselogimine
 Sign in to a website	Logi veebisaidile sisse
+Some shared files could not be hard-linked and were copied instead ({size}).	Mõnda jagatud faili ei saanud kõvasti linkida ja need kopeeriti ({size}).

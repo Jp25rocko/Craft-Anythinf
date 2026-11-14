@@ -719,7 +719,14 @@ mod typed_retries {
             } else {
                 AgentEvent::TextDelta { text: "Done".into() }
             });
-            self.queued.push(AgentEvent::TurnDone { backend: "scripted".into(), input_tokens: 0, output_tokens: 0, cost_usd: None, cost_is_estimate: false });
+            self.queued.push(AgentEvent::TurnDone {
+                backend: "scripted".into(),
+                input_tokens: 0,
+                output_tokens: 0,
+                tokens_unknown: false,
+                cost_usd: None,
+                cost_is_estimate: false,
+            });
         }
         fn session_id(&self) -> Option<String> {
             self.session.clone()
@@ -863,7 +870,14 @@ mod typed_retries {
                 vec![if std::mem::take(&mut self.first_poll) {
                     AgentEvent::Error { message: "The provider is rate limited.".into(), remediation: None, log: None }
                 } else {
-                    AgentEvent::TurnDone { backend: "scripted".into(), input_tokens: 0, output_tokens: 0, cost_usd: None, cost_is_estimate: false }
+                    AgentEvent::TurnDone {
+                        backend: "scripted".into(),
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        tokens_unknown: false,
+                        cost_usd: None,
+                        cost_is_estimate: false,
+                    }
                 }]
             }
             fn last_failure(&self) -> Option<TurnFailure> {
@@ -3427,7 +3441,14 @@ impl Conversation for ChecksItsWork {
             Some(text) => {
                 vec![
                     AgentEvent::TextDelta { text },
-                    AgentEvent::TurnDone { backend: "test".into(), input_tokens: 0, output_tokens: 0, cost_usd: None, cost_is_estimate: false },
+                    AgentEvent::TurnDone {
+                        backend: "test".into(),
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        tokens_unknown: false,
+                        cost_usd: None,
+                        cost_is_estimate: false,
+                    },
                 ]
             }
             None => Vec::new(),
@@ -3567,7 +3588,7 @@ impl Conversation for Decompiles {
         self.events = vec![
             AgentEvent::ToolStarted { call_id: "1".into(), tool, input: json!({"function": "entry"}) },
             AgentEvent::TextDelta { text: "Read it.".into() },
-            AgentEvent::TurnDone { backend: "test".into(), input_tokens: 0, output_tokens: 0, cost_usd: None, cost_is_estimate: false },
+            AgentEvent::TurnDone { backend: "test".into(), input_tokens: 0, output_tokens: 0, tokens_unknown: false, cost_usd: None, cost_is_estimate: false },
         ];
     }
     fn poll(&mut self) -> Vec<AgentEvent> {
@@ -4066,6 +4087,42 @@ fn a_persons_own_project_is_asked_for_nothing_it_would_add_for_our_sake() {
     assert!(b.contains("--screenshot") && !b.contains("its own build and tests"), "a new app beside the files proves itself: {b}");
 }
 
+/// A website capture that kept the original's network traffic tells the builder it can serve a
+/// stand-in backend from it; one without a recording says nothing about it.
+#[test]
+fn a_website_brief_offers_a_stand_in_backend_only_when_the_capture_has_a_recording() {
+    let d = tempfile::tempdir().unwrap();
+    let ws = Workspace::create(d.path(), "Site", "Rebuild this", TargetRef::Website { url: "https://example.com".into() }).unwrap();
+    let capture = ws.root.join("capture");
+    std::fs::create_dir_all(&capture).unwrap();
+    let without = brief(&ws, "website", true, false, None, false, None);
+    assert!(!without.contains("web_standin_build"), "no recording, no stand-in: {without}");
+    // The recording the study writes, written by the same function it calls.
+    let requests = [json!({"method": "GET", "url": "https://api.example.test/v1/items/42", "status": 200, "mime_type": "application/json",
+        "response_body": {"state": "captured", "bytes": 11, "text": "{\"title\":1}"}})];
+    craft_anything_engine::tools::browser_tools::write_recording(&requests, &capture.join(crate::rebuild::study::RECORDING)).unwrap();
+    let with = brief(&ws, "website", true, false, None, false, None);
+    assert!(with.contains("web_standin_build") && with.contains("web_standin_start"), "{with}");
+    // Clean room reads nothing inside the original, so its brief never offers it.
+    let clean = brief(&ws, "website", false, false, None, false, None);
+    assert!(!clean.contains("web_standin"), "{clean}");
+    // A recording elsewhere in the project isn't one the capture kept.
+    std::fs::remove_file(capture.join(crate::rebuild::study::RECORDING)).unwrap();
+    std::fs::write(ws.root.join("other.har"), "{}").unwrap();
+    assert!(!brief(&ws, "website", true, false, None, false, None).contains("web_standin_build"));
+}
+
+/// #1838: the recording step the study runs reads as the tool's own params, `kind` and all, so it
+/// reaches the walkthrough rather than the error notes.
+#[test]
+fn the_studys_recording_step_reads_as_the_tools_params() {
+    let params = crate::rebuild::study::recording_params("https://example.test/start");
+    let parsed: craft_anything_engine::tools::browser_tools::WalkthroughParams =
+        serde_json::from_value(params.clone()).unwrap_or_else(|e| panic!("the study's own params are refused: {e}: {params}"));
+    assert_eq!(parsed.actions.len(), 1);
+    assert!(parsed.keep_bodies.response_body && parsed.keep_bodies.request_body, "a stand-in needs both bodies");
+}
+
 #[test]
 fn a_site_stack_with_nothing_to_recreate_is_a_website() {
     let vite = "React + TypeScript (Vite)";
@@ -4531,4 +4588,16 @@ fn the_brief_says_signed_in_only_when_the_capture_was() {
     }
     std::fs::write(&capture, b"garbage").unwrap();
     assert!(!brief(&ws, "website", false, false, None, false, None).contains(super::brief::SIGNED_IN_NOTE));
+}
+
+#[test]
+fn a_new_build_stops_before_any_turn_when_its_stacks_program_is_missing() {
+    let err = missing_program_stop("Rust + egui (eframe)", |_| false).unwrap_err();
+    assert!(err.message.contains("cargo") && err.remediation.as_deref().is_some_and(|r| r.contains("rustup.rs")), "{err:?}");
+    assert!(missing_program_stop("Rust + egui (eframe)", |p| p == "cargo").is_ok());
+    assert!(missing_program_stop("Python", |_| false).is_ok(), "a stack with no program of its own isn't checked");
+    // Every stack built with Cargo says so, and how to get it.
+    for s in stacks::catalogue().iter().filter(|s| s.name.starts_with("Rust") || s.name == "Bevy") {
+        assert_eq!(stacks::missing_program(&s.name, |_| false).map(|(p, from)| (p, !from.is_empty())), Some(("cargo", true)), "{}", s.name);
+    }
 }

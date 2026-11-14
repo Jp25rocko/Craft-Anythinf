@@ -163,6 +163,10 @@ pub trait AgentAdapter: Send + Sync {
     fn parse(&self, _p: &mut StreamParser, _v: &Value) -> Vec<AgentEvent> {
         Vec::new()
     }
+    /// Diagnostics that an agent reports outside its JSON stream.
+    fn parse_stderr(&self, _p: &mut StreamParser, _line: &str) -> Vec<AgentEvent> {
+        Vec::new()
+    }
     /// It can continue a saved session.
     fn resumes(&self) -> bool {
         false
@@ -208,7 +212,7 @@ pub trait AgentAdapter: Send + Sync {
     }
     /// An environment variable that hands a local native run our tool server, for an agent that
     /// takes it from its environment rather than its arguments.
-    fn mcp_env(&self, _mcp: &McpCommand) -> Result<Option<(&'static str, String)>, ToolError> {
+    fn mcp_env(&self, _mcp: &McpCommand, _access: Access) -> Result<Option<(&'static str, String)>, ToolError> {
         Ok(None)
     }
     /// Whether what a build needs on a remote SSH host is there, checked before a build starts.
@@ -218,7 +222,7 @@ pub trait AgentAdapter: Send + Sync {
     }
     /// Prepare this run's tool server on a remote SSH host (a config file there), returning the
     /// environment variable to set on the remote command. Default: the agent can't carry one.
-    fn remote_tool_server(&self, _host: &str, _mcp: &McpCommand) -> Result<Option<(&'static str, String)>, ToolError> {
+    fn remote_tool_server(&self, _host: &str, _mcp: &McpCommand, _access: Access) -> Result<Option<(&'static str, String)>, ToolError> {
         Ok(None)
     }
     /// The file in which this computer keeps the agent's saved session `id`, so the project can
@@ -605,9 +609,33 @@ impl AgentAdapter for ClaudeCode {
     }
 
     fn signed_in(&self, program: &str) -> Option<bool> {
-        let out = self.process(program).args(["auth", "status", "--json"]).timeout(Duration::from_secs(15)).stdout_cap(64 * 1024).run().ok()?;
-        let v: Value = serde_json::from_str(out.stdout_text().trim()).ok()?;
-        v.get("loggedIn").and_then(Value::as_bool)
+        let out = match self.process(program).args(["auth", "status", "--json"]).timeout(Duration::from_secs(15)).stdout_cap(64 * 1024).run() {
+            Ok(out) => out,
+            Err(e) => {
+                log::debug!("claude auth status --json didn't run: {e}");
+                return None;
+            }
+        };
+        // The status is the first JSON object printed: a certificate warning or a banner before it
+        // isn't a reason to call the person signed out (#1830).
+        let text = out.stdout_text();
+        let Some(json) = first_json_object(&text) else {
+            log::debug!("claude auth status --json: exit {:?}, {} bytes on stdout, no JSON object in it", out.code, text.len());
+            return None;
+        };
+        let v: Value = match serde_json::from_str(json) {
+            Ok(v) => v,
+            Err(e) => {
+                // The answer's wording, never its content: it names an account and a token mode.
+                log::debug!("claude auth status --json: exit {:?}, {} bytes on stdout, its JSON didn't parse: {e}", out.code, text.len());
+                return None;
+            }
+        };
+        let signed = v.get("loggedIn").and_then(Value::as_bool);
+        if signed != Some(true) {
+            log::debug!("claude auth status --json: exit {:?}, {} bytes on stdout, loggedIn: {signed:?}", out.code, text.len());
+        }
+        signed
     }
 
     /// The account its `.claude.json` names (`oauthAccount`), kept there while the sign-in itself
@@ -793,6 +821,36 @@ impl AgentAdapter for Codex {
         &["codex"]
     }
 
+    fn resumes(&self) -> bool {
+        true
+    }
+
+    fn check_native_options(&self, options: &BackendOptions, _cwd: Option<&Path>) -> Result<(), ToolError> {
+        if options.args.iter().any(|arg| arg == "--ephemeral") {
+            return Err(ToolError::invalid("Codex's --ephemeral option does not save conversations for later turns.")
+                .with_remediation("Remove --ephemeral from this backend's arguments so Craft Anything can resume the project's conversation."));
+        }
+        if options.args.iter().any(|arg| arg == "--worktree") {
+            return Err(ToolError::invalid("Codex's --worktree option cannot continue this project's saved conversation.").with_remediation(
+                "Remove --worktree from this backend's arguments. To work in a worktree, select its existing folder as the project folder.",
+            ));
+        }
+        Ok(())
+    }
+
+    fn parse_stderr(&self, p: &mut StreamParser, line: &str) -> Vec<AgentEvent> {
+        let diagnostic = line.trim().to_ascii_lowercase();
+        if p.session_missing || !diagnostic.starts_with("error:") || !diagnostic.contains("no rollout found for thread id ") {
+            return Vec::new();
+        }
+        p.session_missing = true;
+        vec![AgentEvent::Error {
+            message: "Codex's earlier conversation about this project isn't on this computer.".into(),
+            remediation: Some("Ask again: a new conversation starts from what the project already has.".into()),
+            log: None,
+        }]
+    }
+
     /// Ask the selected CLI, not its auth file or keychain; discard raw status output.
     fn signed_in(&self, program: &str) -> Option<bool> {
         let out = Process::new(program).args(["login", "status"]).timeout(Duration::from_secs(10)).stdout_cap(16 * 1024).run().ok()?;
@@ -851,6 +909,11 @@ impl AgentAdapter for Codex {
             v.extend(["-m".into(), m.clone()]);
         }
         v.extend(cx.options.args.iter().cloned());
+        // Exec-only flags (notably --sandbox) stay before the resume subcommand.
+        // The saved thread id is positional data, never another CLI option.
+        if let Some(id) = cx.resume {
+            v.extend(["resume".into(), "--".into(), id.into()]);
+        }
         // The message itself goes in on stdin (see `stdin_text`).
         v.push("-".into());
         v
@@ -1060,10 +1123,61 @@ pub(super) fn remote_cli_path(host: &str) -> Option<String> {
     absolute_path_line(&out.stdout_text())
 }
 
+/// The first JSON object in `text`, to its closing brace. A CLI can print a warning (a certificate
+/// notice on Windows, a banner) before its answer, and the answer is still the object (#1830).
+fn first_json_object(text: &str) -> Option<&str> {
+    let start = text.find('{')?;
+    let rest = text.get(start..)?;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (i, c) in rest.char_indices() {
+        if in_string {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return rest.get(..i + c.len_utf8());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// The first line of `text` when it is an absolute path; a shell function, alias or banner isn't.
 fn absolute_path_line(text: &str) -> Option<String> {
     let line = text.lines().map(str::trim).find(|line| !line.is_empty())?;
     line.starts_with('/').then(|| line.to_string())
+}
+
+#[cfg(test)]
+mod first_json_object_tests {
+    use super::first_json_object;
+
+    /// #1830: a warning printed before the status doesn't hide it, and braces inside text don't
+    /// end it early.
+    #[test]
+    fn the_first_json_object_is_taken_from_noisy_output() {
+        assert_eq!(first_json_object("{\"loggedIn\":true}"), Some("{\"loggedIn\":true}"));
+        let noisy = "(node:1) Warning: self-signed certificate\n{\n  \"loggedIn\": true,\n  \"note\": \"a } inside text\"\n}\n";
+        let json = first_json_object(noisy).expect("the object after the warning");
+        let parsed: serde_json::Value = serde_json::from_str(json).expect("balanced at the right brace");
+        assert_eq!(parsed["loggedIn"], true);
+        assert_eq!(first_json_object("nothing here"), None);
+        assert_eq!(first_json_object("{\"unfinished\": "), None);
+    }
 }
 
 #[cfg(test)]

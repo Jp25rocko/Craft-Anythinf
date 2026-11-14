@@ -1491,3 +1491,4 @@ You're up to date.	Du bist auf dem neuesten Stand.
 {version} is available.	{version} ist verfügbar.
 Forget a website sign-in	Anmeldung bei einer Website vergessen
 Sign in to a website	Bei einer Website anmelden
+Some shared files could not be hard-linked and were copied instead ({size}).	Einige geteilte Dateien konnten nicht hart verlinkt werden und wurden kopiert ({size}).

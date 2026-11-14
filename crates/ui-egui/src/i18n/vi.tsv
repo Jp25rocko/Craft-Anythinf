@@ -1491,3 +1491,4 @@ You're up to date.	Bạn đang dùng phiên bản mới nhất.
 {version} is available.	Đã có phiên bản {version}.
 Forget a website sign-in	Quên thông tin đăng nhập của một trang web
 Sign in to a website	Đăng nhập vào một trang web
+Some shared files could not be hard-linked and were copied instead ({size}).	Một số tệp chia sẻ không thể tạo liên kết cứng nên đã được sao chép ({size}).

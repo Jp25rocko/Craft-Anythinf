@@ -1493,3 +1493,4 @@ You're up to date.	Hai la versione più recente.
 {version} is available.	{version} è disponibile.
 Forget a website sign-in	Dimentica l'accesso a un sito web
 Sign in to a website	Accedi a un sito web
+Some shared files could not be hard-linked and were copied instead ({size}).	Alcuni file condivisi non hanno potuto essere collegati fisicamente e sono stati copiati ({size}).

@@ -629,14 +629,15 @@ impl Worker {
     /// Add the time worked since the last record (and an agent turn's tokens and reported cost)
     /// to the project's usage.json. A question can add its own cost at the same time; a failure is
     /// logged and the build carries on.
-    fn record_usage(&mut self, turn: Option<(u64, u64, Option<f64>, bool)>) {
+    fn record_usage(&mut self, turn: Option<&AgentEvent>) {
         let Some(clock) = self.usage.as_mut() else { return };
         let ms = u64::try_from(clock.since.elapsed().as_millis()).unwrap_or(u64::MAX);
         clock.since = Instant::now();
         let saved = ProjectUsage::update(&clock.root, |u| {
             u.work_ms = u.work_ms.saturating_add(ms);
-            if let Some((input, output, cost, estimate)) = turn {
-                u.add_turn(input, output, cost, estimate);
+            if let Some(AgentEvent::TurnDone { input_tokens, output_tokens, tokens_unknown, cost_usd, cost_is_estimate, .. }) = turn {
+                u.tokens_incomplete |= *tokens_unknown;
+                u.add_turn(*input_tokens, *output_tokens, *cost_usd, *cost_is_estimate);
             }
         });
         if let Err(e) = saved {
@@ -852,6 +853,12 @@ impl Worker {
         self.self_check = Some((kind.clone(), opts.good_enough));
         let kind = kind.as_ref();
         self.editor = self.find_editor(&ws.manifest.stack)?;
+        // A new build whose stack's program is missing would learn so only at its first check,
+        // after a whole turn (#1837). A project already in app/ isn't stopped: the person may
+        // have moved it to another stack, which the recorded one doesn't show.
+        if !remote && stacks::toolchain_in(&ws.app_dir()).is_none() {
+            missing_program_stop(&ws.manifest.stack, |p| craft_anything_platform::which(p).is_some())?;
+        }
         let api_resumed = api.as_ref().is_some_and(crate::agent::ApiConversation::resumed);
         let kept = KeptHistory { in_mode: kept_without_api.in_mode || api_resumed, elsewhere: kept_without_api.elsewhere };
         let carrying_on = is_carrying_on(opts, kept.in_mode);
@@ -1360,10 +1367,10 @@ impl Worker {
                     AgentEvent::Error { message, remediation, .. } => failed = Some((message.clone(), remediation.clone())),
                     _ => {}
                 }
-                if let AgentEvent::TurnDone { input_tokens, output_tokens, cost_usd, cost_is_estimate, .. } = &e {
-                    self.record_usage(Some((*input_tokens, *output_tokens, *cost_usd, *cost_is_estimate)));
-                }
                 let done = matches!(e, AgentEvent::TurnDone { .. });
+                if done {
+                    self.record_usage(Some(&e));
+                }
                 // A saved session that isn't on this computer isn't the build failing: the turn
                 // starts a new one (or, with nothing to start it from, the run's error says why).
                 if !(matches!(e, AgentEvent::Error { .. }) && agent.session_lost()) {
@@ -1638,4 +1645,12 @@ pub fn builder_backend(cfg: &crate::AiConfig, named: Option<&str>) -> Result<cra
             ToolError::new(ErrorCode::BadSettings, "Building needs a coding agent (such as Claude Code) or an AI backend with an API key.")
                 .with_remediation("Install a coding agent or add an API key in Settings → AI, then try again.")
         })
+}
+
+/// Stops a build whose stack needs a program (`cargo`) this computer doesn't have, with how to get it.
+fn missing_program_stop(stack: &str, have: impl Fn(&str) -> bool) -> Result<(), ToolError> {
+    let Some((program, from)) = stacks::missing_program(stack, have) else { return Ok(()) };
+    Err(ToolError::new(ErrorCode::BadSettings, format!("{stack} is built with {program}, which isn't on this computer.")).with_remediation(format!(
+        "{from}, then try again; or start the project again with another stack (\"Build with\" in the app, --build-with in the CLI)."
+    )))
 }

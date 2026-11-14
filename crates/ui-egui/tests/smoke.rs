@@ -1641,16 +1641,26 @@ fn claude_codes_account_folder_is_set_in_settings() {
     assert!(h.state().folder_inputs.is_empty(), "nothing left being typed");
     // A relative folder is refused; the saved one stays.
     h.state_mut().set_agent_folder("Claude Code", Some("claude-work".into()));
-    h.run_steps(4);
+    // Refusing a folder is background work too: an unchanged value alone does not mean the
+    // refusal has finished. Do not overlap it with the next settings mutation.
+    assert!(wait(&mut h, |a| a.jobs.running().next().is_none()));
     assert_eq!(chosen(h.state()).as_deref(), Some("~/.claude-work"));
     // Emptied, it's the usual folder again.
     h.state_mut().set_agent_folder("Claude Code", Some(String::new()));
-    assert!(wait(&mut h, |a| chosen(a).is_none()));
+    assert!(wait(&mut h, |a| chosen(a).is_none() && a.jobs.running().next().is_none()));
     // Added already, so it's offered again under the next free name, on the coding agents' tab.
     h.state_mut().state.detect_tab = Some(craft_anything_ui_egui::detect_tabs::DetectTab::Harnesses);
     h.run_steps(2);
+    h.get_by_label("Add another").scroll_to_me();
+    h.run();
     h.get_by_label("Add another").click();
-    assert!(wait(&mut h, |a| a.backends.iter().any(|b| b.name == "Claude Code 2" && b.model == "claude-code")));
+    assert!(
+        wait(&mut h, |a| a.backends.iter().any(|b| b.name == "Claude Code 2" && b.model == "claude-code")),
+        "backends: {:?}; jobs: {:?}; toasts: {:?}",
+        h.state().backends,
+        h.state().jobs.list.iter().map(|j| (&j.title, &j.outcome)).collect::<Vec<_>>(),
+        h.state().state.toasts
+    );
 }
 
 /// Zoom keys stop at 50% and 200%, Cmd/Ctrl 0 goes back to 100%, and a zoom saved outside the
