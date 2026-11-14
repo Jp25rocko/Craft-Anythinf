@@ -1020,6 +1020,7 @@ Owner: open · Status: in progress
       code) and a refusal explains the fix (`docs/codex.md`)
 - [ ] Codex (#540): run `codex exec` on a real install and check `rebuild_start` gets through
 - [ ] Codex: resume support (`codex exec resume <id>`), verified on a real install
+      — claimed: Codex, branch feature/r2.2-codex-resume (local workspace)
 - [ ] Aider: move the message to `--message-file` once the launcher can write one (see the argv item above).
 - [x] Aider: read project-folder `.aider.conf.yml` and `.env` in `check_setup`, which needs the working directory passed into `check_native_options`.
       It reads the run's folder, the top of its git repository, then the home folder, as Aider
