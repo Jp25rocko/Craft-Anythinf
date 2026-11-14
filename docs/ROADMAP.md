@@ -1645,6 +1645,10 @@ Gaps found while using the app for real projects.
       a Rust project rewritten in Python is still checked with Cargo until the old manifest is
       moved out (#1837): record the stack from what was built for every toolchain, and check
       with that
+- [x] "Open in the workbench" on a project opens the project's own target (a local app or file) and
+      loads the workbench list in Deep mode; it used to only switch screens, so the workbench showed nothing (#1107)
+      A busy session retries its snapshot on a timer, including when no previous target was open.
+      — claimed: Agapenordev, branch bugfix/r2.9-workbench-opens-project-target
 
 ### R2.10 Pinned builds
 Owner: maintainers · Status: in progress
