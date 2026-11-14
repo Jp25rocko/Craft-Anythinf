@@ -12,7 +12,7 @@ use super::web_common::{self, Browser, LaunchOptions, Secrets};
 use crate::tool::{Ctx, Effects, Requires, ToolOutput, ToolSpec, Toolset, parse_params, schema_of};
 use craft_anything_analysis::audio::{self, Edge, EnvelopeSample, Fingerprint, GraphSignature};
 use craft_anything_engines::cdp::{self, CdpClient, Deadline, PAGE_MAX_MESSAGE};
-use craft_anything_evidence::{Authority, Confidence, Coverage, CoverageStatus, EvidenceBuilder, Limitation, Location, Subject, ToolError};
+use craft_anything_evidence::{Authority, Confidence, Coverage, CoverageStatus, ErrorCode, EvidenceBuilder, Limitation, Location, Subject, ToolError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -162,6 +162,17 @@ pub fn specs() -> Vec<ToolSpec> {
             Requires::Nothing,
             schema_of::<CompareAudioParams>,
             web_audio_compare,
+        ),
+        spec(
+            "web_audio_capture",
+            "Capture a page's live audio",
+            "Listen to a page's live Web Audio graph over CDP for 5 to 120 seconds: node kinds and connections, an AnalyserNode's averaged frequency spectrum, a 1 Hz loudness envelope, the page's mixer state (scenario id, layer gains and pans), and an outline of the requests the page made while listening. Injects an introspection script, so it needs your approval and Deep mode; cookies, storage values and declared secrets are redacted, and no audio is recorded.",
+            "Measure what a web page is playing right now, so a rebuild can be compared against it.",
+            Toolset::Browser,
+            Effects::EVIDENCE.union(Effects::EXECUTES_FOREIGN_CODE).union(Effects::ACCESSES_NETWORK).union(Effects::LAUNCHES_PROCESS),
+            Requires::Nothing,
+            schema_of::<CaptureAudioParams>,
+            web_audio_capture,
         ),
     ]
 }
@@ -2007,6 +2018,540 @@ fn graph_diff(before: &GraphSignature, after: &GraphSignature) -> Value {
         "added_edges": added_edges,
         "removed_edges": removed_edges,
     })
+}
+
+// ---------------------------------------------------------------------------------------------
+// web_audio_capture (Deep-only: live audio graph, spectrum and mixer state)
+
+/// Most spectrum values a capture keeps (a 32k-point FFT is 16k bins; 4k is plenty to bin).
+const MAX_CAPTURE_SPECTRUM: usize = 4_096;
+/// Most loudness values a capture keeps (ten minutes at one per second).
+const MAX_CAPTURE_RMS: usize = 600;
+/// Most graph edges a capture keeps.
+const MAX_CAPTURE_EDGES: usize = 2_000;
+/// Most node kinds a capture keeps.
+const MAX_CAPTURE_KINDS: usize = 64;
+/// Largest mixer-state object a capture keeps, in bytes.
+const MAX_MIXER_BYTES: usize = 256 * 1024;
+/// Most endpoints the network outline names.
+const MAX_OUTLINE_ENDPOINTS: usize = 50;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureAudioParams {
+    /// Loopback CDP endpoint, e.g. http://127.0.0.1:9222. Omit to launch a browser.
+    #[serde(default)]
+    pub cdp_endpoint: Option<String>,
+    /// Launch a located Chromium when no endpoint is given.
+    #[serde(default)]
+    pub launch: bool,
+    /// Launch headless (when launching).
+    #[serde(default = "yes")]
+    pub headless: bool,
+    /// Pass --no-sandbox when launching (needed in some containers).
+    #[serde(default)]
+    pub no_sandbox: bool,
+    /// The page target to listen to (default: the first page).
+    #[serde(default)]
+    pub target_id: Option<String>,
+    /// How long to sample the live audio, in milliseconds (5000..=120000).
+    #[serde(default = "d_capture_duration_ms")]
+    pub duration_ms: u64,
+    /// Overall limit for the whole capture, in seconds (1..=600).
+    #[serde(default = "d_capture_timeout")]
+    pub timeout_secs: u64,
+    /// Values to redact wherever they appear in the capture (cookies, tokens, names).
+    #[serde(default)]
+    pub hidden_values: Vec<String>,
+}
+
+fn d_capture_duration_ms() -> u64 {
+    30_000
+}
+
+fn d_capture_timeout() -> u64 {
+    180
+}
+
+fn web_audio_capture(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError> {
+    let p: CaptureAudioParams = parse_params(params)?;
+    if !(5_000..=120_000).contains(&p.duration_ms) {
+        return Err(ToolError::invalid(format!("duration_ms must be 5000..=120000; {} is outside that window", p.duration_ms))
+            .with_remediation("Listen for five seconds or longer (up to two minutes) so the spectrum and one-per-second loudness envelope mean something."));
+    }
+    let dl = deadline(ctx, p.timeout_secs)?;
+    let launch = p.launch || p.cdp_endpoint.is_none();
+    let browser = resolve_browser(ctx, p.cdp_endpoint.as_deref(), launch, p.headless, p.no_sandbox, &dl)?;
+    let targets = cdp::json_list(&browser.endpoint, &dl)?;
+    let target = web_common::pick_target(&targets, p.target_id.as_deref(), Some("page"))?;
+    let page_url = web_common::sanitize_url(target.get("url").and_then(Value::as_str).unwrap_or_default());
+    let mut client = web_common::connect_target(&browser, target, PAGE_MAX_MESSAGE, &dl)?;
+    let mut secrets = Secrets::new(&p.hidden_values);
+    // Runtime runs the introspection script, Media reports which audio is playing, and Network
+    // outlines the requests made while the capture listens.
+    let _ = client.call("Runtime.enable", json!({}), None, &dl);
+    let _ = client.call("Media.enable", json!({}), None, &dl);
+    let _ = client.call("Network.enable", json!({}), None, &dl);
+
+    let reply = match client.call(
+        "Runtime.evaluate",
+        json!({
+            "expression": audio_capture_script(p.duration_ms),
+            "awaitPromise": true,
+            "returnByValue": true,
+            "userGesture": true,
+        }),
+        None,
+        &dl,
+    ) {
+        Ok(reply) => reply,
+        Err(error) => return cleanup_then_err(&mut client, &dl, error),
+    };
+    if let Some(details) = reply.get("exceptionDetails") {
+        let text = details
+            .pointer("/exception/description")
+            .and_then(Value::as_str)
+            .or_else(|| details.get("text").and_then(Value::as_str))
+            .unwrap_or("the introspection script failed");
+        let error = ToolError::new(ErrorCode::ProgramFailed, format!("the page rejected the audio introspection: {}", clip_text(text, 400)))
+            .with_remediation("Reload the page and try again; a Content-Security-Policy that blocks injected scripts also blocks this capture.");
+        return cleanup_then_err(&mut client, &dl, error);
+    }
+    let capture = match parse_audio_capture_reply(&reply) {
+        Ok(capture) => capture,
+        Err(error) => return cleanup_then_err(&mut client, &dl, error),
+    };
+    let network_outline = audio_network_outline(&mut client, &mut secrets);
+    cleanup(&mut client, &dl);
+
+    let page_url = secrets.text(&page_url);
+    let scenario = capture.pointer("/mixer_state/scenario_id").and_then(Value::as_str).unwrap_or_default().to_string();
+    let name = secrets.text(&if scenario.is_empty() { page_url.clone() } else { scenario });
+    let node_kinds = capture.pointer("/graph/node_counts").and_then(Value::as_object).map(|counts| counts.len()).unwrap_or(0);
+    let node_count: u64 =
+        capture.pointer("/graph/node_counts").and_then(Value::as_object).map(|counts| counts.values().filter_map(Value::as_u64).sum()).unwrap_or(0);
+    let edge_count = capture.pointer("/graph/edges").and_then(Value::as_array).map(Vec::len).unwrap_or(0);
+    let spectrum_len = capture.get("spectrum").and_then(Value::as_array).map(Vec::len).unwrap_or(0);
+    let rms_len = capture.get("rms").and_then(Value::as_array).map(Vec::len).unwrap_or(0);
+    let graph_truncated = capture.get("graph_truncated").and_then(Value::as_bool).unwrap_or(false);
+    let spectrum_truncated = capture.get("spectrum_truncated").and_then(Value::as_bool).unwrap_or(false);
+    let sample_rate = capture.get("sample_rate").and_then(Value::as_u64).unwrap_or(48_000);
+    let fft_size = capture.get("fft_size").and_then(Value::as_u64).unwrap_or(0);
+    let samples = capture.get("samples").and_then(Value::as_u64).unwrap_or(0);
+    let summary = secrets.text(&format!(
+        "Captured {} ms of {name}'s live audio: {node_count} node(s) across {node_kinds} kind(s), {edge_count} connection(s), {spectrum_len} spectrum bin(s) and {rms_len} loudness value(s) at {sample_rate} Hz.",
+        p.duration_ms
+    ));
+
+    let result = json!({
+        "browser": {"product": browser.product, "started_by": if browser.launched { "craft-anything" } else { "external" }, "cleanup": if browser.launched { "closed" } else { "disconnected" }},
+        "url": page_url,
+        "duration_ms": p.duration_ms,
+        "captured_at_ms": now_unix_ms(),
+        "graph": capture.get("graph").cloned().unwrap_or(Value::Null),
+        "graph_truncated": graph_truncated,
+        "spectrum": capture.get("spectrum").cloned().unwrap_or_else(|| json!([])),
+        "spectrum_truncated": spectrum_truncated,
+        "rms": capture.get("rms").cloned().unwrap_or_else(|| json!([])),
+        "mixer_state": capture.get("mixer_state").cloned().unwrap_or_else(|| json!({})),
+        "mixer_source": capture.get("mixer_source").cloned().unwrap_or_else(|| json!("none")),
+        "mixer_envelope": [],
+        "network_outline": network_outline,
+        "sample_rate": sample_rate,
+        "fft_size": fft_size,
+        "samples": samples,
+        "secrets_hidden": p.hidden_values.len(),
+        "secret_redactions": secrets.redactions,
+    });
+    let result = secrets.scrub(&result);
+
+    let mut builder = EvidenceBuilder::new(
+        "web_audio_capture",
+        Subject { kind: "audio-scene".into(), sha256: None, name: Some(name) },
+        browser_env(ctx.session.clean_room(), &browser),
+    )
+    .params(json!({
+        "endpoint": browser.endpoint.origin,
+        "launched": browser.launched,
+        "duration_ms": p.duration_ms,
+        "target_id": p.target_id,
+        "sensitive_value_declarations": p.hidden_values.len(),
+    }))
+    .result(result)
+    .summary(summary)
+    .confidence(Confidence::Observed)
+    .authority(Authority::OurRun)
+    .limitation(Limitation::new(
+        "analyser_snapshot",
+        "The spectrum is one AnalyserNode's averaged FFT and its loudness one value per second, not a recording: layers, timbre beyond the bin resolution and everything shorter than a second are lost.",
+    ))
+    .limitation(Limitation::new(
+        "live_stochastic_scene",
+        "This is one live window of a page's audio: a second capture of a generative scene sounds different, so compare fingerprints rather than exact samples.",
+    ))
+    .limitation(Limitation::new(
+        "no_interaction_trace",
+        "This capture did not trace interactions, so mixer_envelope is empty and only the mixer state at the end is recorded.",
+    ))
+    .coverage(Coverage::complete(1))
+    .location(Location::new("url", page_url));
+    if node_count == 0 {
+        builder = builder.limitation(Limitation::new(
+            "graph_not_observed",
+            "No audio node was created or connected after the script started, so the graph is empty: nodes the page built before the capture cannot be recovered.",
+        ));
+    }
+    if graph_truncated || spectrum_truncated {
+        builder =
+            builder.limitation(Limitation::new("bounded_capture", "Some graph edges, node kinds or spectrum bins were dropped to keep the capture bounded."));
+    }
+    if samples == 0 {
+        builder = builder.limitation(Limitation::new(
+            "no_audio_samples",
+            "The analyser returned no samples during the window: the audio context may be suspended, or the page plays nothing.",
+        ));
+    }
+    if p.hidden_values.iter().any(|value| !value.is_empty()) {
+        builder = builder.limitation(Limitation::new("secrets_redacted", format!("{} occurrence(s) of declared values were redacted", secrets.redactions)));
+    }
+    Ok(ToolOutput::evidence(builder.build()?))
+}
+
+/// The page script, with the requested window substituted. It resolves an existing AudioContext
+/// (null when the page has none), instruments node creation and connection, finds an analyser,
+/// then averages its spectrum and one-per-second loudness over the window. Bounded throughout.
+const AUDIO_CAPTURE_SCRIPT: &str = r#"
+(async () => {
+  const MAX_SPECTRUM = 4096, MAX_EDGES = 2000, MAX_NODES = 2000, MAX_LAYERS = 64, MAX_KINDS = 64, MAX_RMS = 600;
+  const DURATION_MS = __DURATION_MS__;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return null;
+  const kindOf = (node) => {
+    try {
+      const name = node && node.constructor && node.constructor.name;
+      if (typeof name !== 'string' || name.length === 0 || name.length > 64) return 'AudioNode';
+      return name.replace(/Node$/, '').replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
+    } catch (error) { return 'AudioNode'; }
+  };
+  const findContext = () => {
+    const registry = window.__craftAnythingAudioContexts;
+    if (Array.isArray(registry)) {
+      for (const candidate of registry) {
+        if (candidate && typeof candidate.createAnalyser === 'function') return candidate;
+      }
+    }
+    for (const key of ['__craftAnythingAudioContext', 'audioContext', 'ctx']) {
+      let candidate;
+      try { candidate = window[key]; } catch (error) { continue; }
+      if (candidate && typeof candidate.createAnalyser === 'function' && candidate.destination) return candidate;
+    }
+    let seen = 0;
+    for (const key of Object.getOwnPropertyNames(window)) {
+      if (seen >= 5000) break;
+      seen += 1;
+      if (key.length > 128) continue;
+      let candidate;
+      try { candidate = window[key]; } catch (error) { continue; }
+      if (candidate && typeof candidate === 'object' && typeof candidate.createAnalyser === 'function' && typeof candidate.currentTime === 'number') return candidate;
+    }
+    return null;
+  };
+  const context = findContext();
+  if (!context) return null;
+  if (context.state === 'suspended') {
+    try { await context.resume(); } catch (error) {}
+  }
+  const tracker = (() => {
+    const prior = window.__craftAnythingAudioGraph;
+    const state = prior && prior.nodes instanceof Set && Array.isArray(prior.edges) ? prior : { nodes: new Set(), edges: [], truncated: false };
+    state.kindOf = kindOf;
+    const record = (node) => {
+      try { if (node && state.nodes.size < MAX_NODES) state.nodes.add(node); } catch (error) {}
+      return node;
+    };
+    const creators = ['createGain', 'createOscillator', 'createAnalyser', 'createBiquadFilter', 'createDelay', 'createConvolver', 'createDynamicsCompressor', 'createPanner', 'createStereoPanner', 'createWaveShaper', 'createChannelSplitter', 'createChannelMerger', 'createConstantSource', 'createBufferSource', 'createMediaElementSource', 'createMediaStreamSource', 'createScriptProcessor', 'createPeriodicWave'];
+    for (const name of creators) {
+      try {
+        const original = AC.prototype[name];
+        if (typeof original !== 'function' || original.__craftWrapped) continue;
+        const wrapped = function (...args) { return record(original.apply(this, args)); };
+        wrapped.__craftWrapped = true;
+        AC.prototype[name] = wrapped;
+      } catch (error) {}
+    }
+    try {
+      const prototype = window.AudioNode && window.AudioNode.prototype;
+      const original = prototype && prototype.connect;
+      if (typeof original === 'function' && !original.__craftWrapped) {
+        const wrapped = function (destination, ...rest) {
+          try {
+            const isParam = typeof window.AudioParam === 'function' && destination instanceof window.AudioParam;
+            if (state.edges.length < MAX_EDGES) {
+              state.edges.push({ from: kindOf(this), to: isParam ? 'AudioParam' : kindOf(destination), kind: isParam ? 'param' : 'audio' });
+            } else {
+              state.truncated = true;
+            }
+            record(this);
+            if (!isParam) record(destination);
+          } catch (error) {}
+          return original.call(this, destination, ...rest);
+        };
+        wrapped.__craftWrapped = true;
+        prototype.connect = wrapped;
+      }
+    } catch (error) {}
+    try { Object.defineProperty(window, '__craftAnythingAudioGraph', { value: state, configurable: true }); } catch (error) {}
+    return state;
+  })();
+  const snapshot = () => {
+    const counts = {};
+    const edges = [];
+    const seen = new Set();
+    let truncated = !!tracker.truncated;
+    for (const node of tracker.nodes) {
+      const kind = kindOf(node);
+      counts[kind] = (counts[kind] || 0) + 1;
+      if (Object.keys(counts).length > MAX_KINDS) truncated = true;
+    }
+    for (const edge of tracker.edges.slice(0, MAX_EDGES)) {
+      const key = edge.from + '\u0000' + edge.to + '\u0000' + edge.kind;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      edges.push({ from: edge.from.slice(0, 64), to: edge.to.slice(0, 64), kind: edge.kind.slice(0, 32) });
+    }
+    return { graph: { node_counts: counts, edges: edges }, truncated: truncated };
+  };
+  const findAnalyser = () => {
+    const named = window.__craftAnythingAudioAnalyser;
+    if (named && typeof named.getByteFrequencyData === 'function') return named;
+    const registry = window.__craftAnythingAudioAnalysers;
+    if (Array.isArray(registry)) {
+      for (const candidate of registry) {
+        if (candidate && typeof candidate.getByteFrequencyData === 'function') return candidate;
+      }
+    }
+    for (const node of tracker.nodes) {
+      if (node && typeof node.getByteFrequencyData === 'function') return node;
+    }
+    return null;
+  };
+  const analyser = findAnalyser();
+  const usable = analyser && typeof analyser.getByteFrequencyData === 'function' && typeof analyser.getByteTimeDomainData === 'function' && analyser.frequencyBinCount > 0;
+  if (!usable) {
+    const graph = snapshot();
+    return { error: 'no_analyser', graph: graph.graph, graph_truncated: graph.truncated };
+  }
+  const mixer = (() => {
+    for (const key of ['__craftAnythingMixer', '__craftAnythingMixerState', 'audioMixerState', '__audioMixerState', 'mixerState']) {
+      let candidate;
+      try { candidate = window[key]; } catch (error) { continue; }
+      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+      try {
+        const copy = JSON.parse(JSON.stringify(candidate));
+        if (copy && typeof copy === 'object') return { source: key, state: copy };
+      } catch (error) {}
+    }
+    const layers = [];
+    let index = 0;
+    for (const node of tracker.nodes) {
+      if (layers.length >= MAX_LAYERS) break;
+      try {
+        if (node && node.gain && typeof node.gain.value === 'number') {
+          layers.push({ id: String(node.__layerId || ('layer_' + index)), gain: node.gain.value, pan: 0 });
+          index += 1;
+        } else if (node && node.pan && typeof node.pan.value === 'number') {
+          layers.push({ id: String(node.__layerId || ('layer_' + index)), gain: 1, pan: node.pan.value });
+          index += 1;
+        }
+      } catch (error) {}
+    }
+    const title = typeof document !== 'undefined' && document ? String(document.title || '').slice(0, 120) : '';
+    return { source: layers.length > 0 ? 'graph' : 'none', state: { scenario_id: title, layers: layers } };
+  })();
+  const fftSize = Math.max(1, Math.min(analyser.frequencyBinCount | 0, MAX_SPECTRUM));
+  const frequency = new Uint8Array(analyser.frequencyBinCount);
+  const waveform = new Uint8Array(analyser.fftSize);
+  const sums = new Float64Array(fftSize);
+  const rms = [];
+  let samples = 0, bucketSum = 0, bucketCount = 0, bucketStart = 0;
+  const started = performance.now();
+  while (true) {
+    const elapsed = performance.now() - started;
+    if (elapsed >= DURATION_MS) break;
+    analyser.getByteFrequencyData(frequency);
+    analyser.getByteTimeDomainData(waveform);
+    for (let index = 0; index < fftSize; index += 1) sums[index] += frequency[index] || 0;
+    let squares = 0;
+    for (let index = 0; index < waveform.length; index += 1) {
+      const value = (waveform[index] - 128) / 128;
+      squares += value * value;
+    }
+    bucketSum += waveform.length > 0 ? Math.sqrt(squares / waveform.length) : 0;
+    bucketCount += 1;
+    samples += 1;
+    if (elapsed - bucketStart >= 1000) {
+      if (rms.length < MAX_RMS) rms.push(bucketCount > 0 ? bucketSum / bucketCount : 0);
+      bucketSum = 0;
+      bucketCount = 0;
+      bucketStart += 1000;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  if (bucketCount > 0 && rms.length < MAX_RMS) rms.push(bucketSum / bucketCount);
+  const spectrum = [];
+  for (let index = 0; index < fftSize; index += 1) spectrum.push(samples > 0 ? sums[index] / samples : 0);
+  const graph = snapshot();
+  return {
+    graph: graph.graph,
+    graph_truncated: graph.truncated,
+    spectrum: spectrum,
+    spectrum_truncated: analyser.frequencyBinCount > MAX_SPECTRUM,
+    rms: rms,
+    mixer_state: mixer.state,
+    mixer_source: mixer.source,
+    mixer_envelope: [],
+    sample_rate: context.sampleRate,
+    fft_size: analyser.fftSize,
+    samples: samples,
+    duration_ms: Math.round(performance.now() - started)
+  };
+})()
+"#;
+
+fn audio_capture_script(duration_ms: u64) -> String {
+    AUDIO_CAPTURE_SCRIPT.replace("__DURATION_MS__", &duration_ms.to_string())
+}
+
+/// Validate and bound the page's audio report. A `null` result means the page has no
+/// AudioContext; `no_analyser` means it has a graph but nothing to read a spectrum from.
+fn parse_audio_capture_reply(reply: &Value) -> Result<Value, ToolError> {
+    let value = reply.get("result").and_then(|result| result.get("value")).cloned().unwrap_or(Value::Null);
+    if value.is_null() {
+        return Err(ToolError::new(ErrorCode::FeatureMissing, "the page has no AudioContext to listen to")
+            .with_remediation(
+                "Play the page's audio first: the capture found no AudioContext. If the sound plays in a cross-origin iframe, pass that frame's target_id.",
+            )
+            .with_details(json!({"reason": "no_audio_graph"})));
+    }
+    if !value.is_object() {
+        return Err(ToolError::new(ErrorCode::GarbledOutput, "the page's audio report wasn't an object").with_remediation("Reload the page and try again."));
+    }
+    if value.get("error").and_then(Value::as_str) == Some("no_analyser") {
+        return Err(ToolError::new(ErrorCode::FeatureMissing, "the page's audio graph has no AnalyserNode to read")
+            .with_remediation("Expose the page's analyser on window.__craftAnythingAudioAnalyser, or add an AnalyserNode to the graph, then capture again.")
+            .with_details(json!({"reason": "no_analyser"})));
+    }
+
+    let spectrum_all = value.get("spectrum").and_then(Value::as_array).map(Vec::len).unwrap_or(0);
+    let mut spectrum = number_list(&value, "spectrum")?;
+    spectrum.truncate(MAX_CAPTURE_SPECTRUM);
+    let mut rms = number_list(&value, "rms")?;
+    rms.truncate(MAX_CAPTURE_RMS);
+
+    let mut graph = value.get("graph").filter(|graph| graph.is_object()).cloned().unwrap_or_else(|| json!({"node_counts": {}, "edges": []}));
+    let mut graph_truncated = value.get("graph_truncated").and_then(Value::as_bool).unwrap_or(false);
+    if let Some(edges) = graph.get_mut("edges").and_then(Value::as_array_mut)
+        && edges.len() > MAX_CAPTURE_EDGES
+    {
+        edges.truncate(MAX_CAPTURE_EDGES);
+        graph_truncated = true;
+    }
+    if let Some(counts) = graph.get_mut("node_counts").and_then(Value::as_object_mut) {
+        while counts.len() > MAX_CAPTURE_KINDS {
+            let Some(kind) = counts.keys().next().cloned() else { break };
+            counts.remove(&kind);
+            graph_truncated = true;
+        }
+    }
+
+    let mixer = value.get("mixer_state").filter(|state| state.is_object()).cloned().unwrap_or_else(|| json!({}));
+    let mixer_bytes = serde_json::to_string(&mixer).map(|text| text.len()).unwrap_or(0);
+    if mixer_bytes > MAX_MIXER_BYTES {
+        return Err(ToolError::new(ErrorCode::OverLimit, format!("the page's mixer state is {mixer_bytes} bytes; at most {MAX_MIXER_BYTES} are kept"))
+            .with_remediation("Capture a page whose mixer state is smaller, or expose only the fields the comparison needs."));
+    }
+
+    let sample_rate = value.get("sample_rate").and_then(Value::as_u64).filter(|rate| (1..=384_000).contains(rate)).unwrap_or(48_000);
+    let fft_size = value.get("fft_size").and_then(Value::as_u64).unwrap_or(0);
+    let samples = value.get("samples").and_then(Value::as_u64).unwrap_or(0);
+    Ok(json!({
+        "graph": graph,
+        "graph_truncated": graph_truncated,
+        "spectrum": spectrum,
+        "spectrum_truncated": value.get("spectrum_truncated").and_then(Value::as_bool).unwrap_or(false) || spectrum_all > MAX_CAPTURE_SPECTRUM,
+        "rms": rms,
+        "mixer_state": mixer,
+        "mixer_source": value.get("mixer_source").and_then(Value::as_str).unwrap_or("none"),
+        "mixer_envelope": [],
+        "sample_rate": sample_rate,
+        "fft_size": fft_size,
+        "samples": samples,
+    }))
+}
+
+/// An outline of the requests the page made while the capture listened: how many, their origins
+/// and a bounded endpoint list. Query values are dropped and declared secrets are redacted.
+fn audio_network_outline(client: &mut CdpClient, secrets: &mut Secrets) -> Value {
+    use std::collections::{BTreeMap, BTreeSet};
+    let events = client.take_events();
+    let mut count = 0u64;
+    let mut origins: BTreeMap<String, u64> = BTreeMap::new();
+    let mut endpoints: Vec<Value> = Vec::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut truncated = false;
+    for event in &events {
+        if event.method != "Network.requestWillBeSent" {
+            continue;
+        }
+        count = count.saturating_add(1);
+        let url = secrets.text(&web_common::sanitize_url(event.params.pointer("/request/url").and_then(Value::as_str).unwrap_or_default()));
+        let (origin, path) = split_origin_path(&url);
+        if !origin.is_empty() {
+            let entry = origins.entry(origin.clone()).or_insert(0);
+            *entry = entry.saturating_add(1);
+        }
+        let method = event.params.pointer("/request/method").and_then(Value::as_str).unwrap_or("GET");
+        let endpoint = format!("{origin}{path}");
+        if seen.insert(format!("{method} {endpoint}")) {
+            if endpoints.len() < MAX_OUTLINE_ENDPOINTS {
+                endpoints.push(json!({"method": method, "endpoint": endpoint}));
+            } else {
+                truncated = true;
+            }
+        }
+    }
+    json!({"request_count": count, "origins": origins, "endpoints": endpoints, "truncated": truncated})
+}
+
+/// Origin and path of a URL, with the query and fragment dropped. A relative or malformed URL
+/// keeps no origin.
+fn split_origin_path(url: &str) -> (String, String) {
+    let url = url.trim();
+    let Some(scheme_end) = url.find("://") else {
+        return (String::new(), url.split(['?', '#']).next().unwrap_or("").to_string());
+    };
+    let authority_start = scheme_end + 3;
+    let rest = url.get(authority_start..).unwrap_or("");
+    let (authority, tail) = match rest.find(['/', '?', '#']) {
+        Some(at) => rest.split_at(at),
+        None => (rest, ""),
+    };
+    let origin = format!("{}{}", url.get(..authority_start).unwrap_or(""), authority);
+    (origin, tail.split(['?', '#']).next().unwrap_or("").to_string())
+}
+
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)).unwrap_or(0)
+}
+
+/// At most `max` characters, with an ellipsis when the text was cut.
+fn clip_text(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(max).collect();
+    out.push('…');
+    out
 }
 
 // ---------------------------------------------------------------------------------------------

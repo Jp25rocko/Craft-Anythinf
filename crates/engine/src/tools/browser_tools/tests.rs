@@ -18,16 +18,24 @@ const SECRET: &str = "tok-SECRET-123";
 
 /// Start a fake CDP endpoint. Returns (endpoint url, a flag set true once a WS connection closed).
 fn fake_cdp() -> (String, Arc<AtomicBool>) {
+    fake_cdp_with_eval(Value::Null)
+}
+
+/// Start a fake CDP endpoint whose `Runtime.evaluate` answers with `value` (the remote object's
+/// `value`, e.g. an audio report or `null` for a page with no AudioContext).
+fn fake_cdp_with_eval(value: Value) -> (String, Arc<AtomicBool>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let url = format!("http://127.0.0.1:{port}");
     let ws_seen = Arc::new(AtomicBool::new(false));
     let ws_seen2 = ws_seen.clone();
+    let eval = Arc::new(value);
     std::thread::spawn(move || {
         for s in listener.incoming() {
             let Ok(stream) = s else { break };
             let seen = ws_seen2.clone();
-            std::thread::spawn(move || serve(stream, port, seen));
+            let eval = eval.clone();
+            std::thread::spawn(move || serve(stream, port, seen, eval));
         }
     });
     (url, ws_seen)
@@ -59,7 +67,7 @@ fn http_json(stream: &mut TcpStream, body: &str) {
     let _ = stream.write_all(resp.as_bytes());
 }
 
-fn serve(mut stream: TcpStream, port: u16, ws_seen: Arc<AtomicBool>) {
+fn serve(mut stream: TcpStream, port: u16, ws_seen: Arc<AtomicBool>, eval: Arc<Value>) {
     let (request_line, headers) = read_headers(&mut stream);
     let path = request_line.split_whitespace().nth(1).unwrap_or("/");
     if path.starts_with("/json/version") {
@@ -87,7 +95,7 @@ fn serve(mut stream: TcpStream, port: u16, ws_seen: Arc<AtomicBool>) {
         let accept = ws_accept(&key);
         let resp = format!("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n");
         let _ = stream.write_all(resp.as_bytes());
-        serve_ws(&mut stream);
+        serve_ws(&mut stream, &eval);
         ws_seen.store(true, Ordering::Relaxed);
         return;
     }
@@ -154,7 +162,7 @@ fn ws_write(stream: &mut TcpStream, text: &str) {
     let _ = stream.write_all(&frame);
 }
 
-fn serve_ws(stream: &mut TcpStream) {
+fn serve_ws(stream: &mut TcpStream, eval: &Value) {
     let bundle = craft_anything_testkit::electron::WEBPACK_BUNDLE;
     while let Some(msg) = ws_read(stream) {
         let req: Value = match serde_json::from_str(&msg) {
@@ -202,6 +210,8 @@ fn serve_ws(stream: &mut TcpStream) {
             "Accessibility.getFullAXTree" => json!({"nodes": [{"role": {"value": "button"}, "name": {"value": format!("Pay {SECRET}")}}]}),
             "DOMStorage.getDOMStorageItems" => json!({"entries": [["theme", "dark-VALUE"]]}),
             "Network.getCookies" => json!({"cookies": [{"name": "sid", "value": "cookie-VALUE"}]}),
+            // The audio capture's introspection script; the test decides what the page reports.
+            "Runtime.evaluate" => json!({"result": {"value": eval.clone()}}),
             _ => json!({}),
         };
         ws_write(stream, &json!({"id": id, "result": result}).to_string());
@@ -1222,4 +1232,96 @@ fn unequal_rms_envelopes_are_resampled_with_a_limitation() {
     assert!(correlation.is_finite() && correlation > 0.99, "interpolated correlation {correlation}");
     assert_eq!(cmp["result"]["likeness_pass"], true);
     assert!(cmp["limitations"].as_array().unwrap().iter().any(|l| l["code"] == "rms_resampled"), "{}", cmp["limitations"]);
+}
+
+// ---------------------------------------------------------------------------------------------
+// web_audio_capture (Deep-only, live audio graph)
+
+/// Call web_audio_capture with the consent a foreign-code tool needs.
+fn capture_call(e: &Engine, p: Value) -> Result<Value, ToolError> {
+    e.call("web_audio_capture", p, CallOptions::new(Caller::Mcp).with_consent(crate::Consent::Granted)).map(|o| o.to_json())
+}
+
+/// What the page's introspection script reports for a playing audio scene.
+fn audio_report() -> Value {
+    json!({
+        "graph": {"node_counts": {"gain": 2, "oscillator": 1}, "edges": [{"from": "oscillator", "to": "gain", "kind": "audio"}]},
+        "spectrum": [0.0, 12.0, 40.0, 255.0],
+        "rms": [0.12, 0.2, 0.18],
+        "mixer_state": {"scenario_id": "focus", "title": format!("Focus {SECRET}")},
+        "mixer_envelope": [],
+        "sample_rate": 48000,
+        "fft_size": 2048,
+        "graph_truncated": false
+    })
+}
+
+#[test]
+fn capture_without_audio_context_is_typed_error() {
+    // The page answers the introspection script with null: it has no AudioContext to listen to.
+    let (url, _) = fake_cdp();
+    let e = Engine::new(crate::testing::session());
+    let err = capture_call(&e, json!({"cdp_endpoint": url, "duration_ms": 5000})).unwrap_err();
+    assert_eq!(err.code, ErrorCode::FeatureMissing, "{}", err.message);
+    assert!(err.remediation.as_deref().unwrap_or_default().contains("no AudioContext"), "{:?}", err.remediation);
+    assert_eq!(err.details.as_ref().and_then(|d| d.get("reason")).and_then(Value::as_str), Some("no_audio_graph"));
+}
+
+#[test]
+fn capture_without_analyser_is_typed_error() {
+    let (url, _) = fake_cdp_with_eval(json!({"error": "no_analyser", "graph": {"node_counts": {}, "edges": []}}));
+    let e = Engine::new(crate::testing::session());
+    let err = capture_call(&e, json!({"cdp_endpoint": url, "duration_ms": 5000})).unwrap_err();
+    assert_eq!(err.code, ErrorCode::FeatureMissing, "{}", err.message);
+    assert!(err.message.contains("AnalyserNode"), "{}", err.message);
+    assert_eq!(err.details.as_ref().and_then(|d| d.get("reason")).and_then(Value::as_str), Some("no_analyser"));
+}
+
+#[test]
+fn capture_returns_graph_spectrum_and_mixer_state_redacted() {
+    let (url, _) = fake_cdp_with_eval(audio_report());
+    let e = Engine::new(crate::testing::session());
+    let v = capture_call(&e, json!({"cdp_endpoint": url, "duration_ms": 5000, "hidden_values": [SECRET]})).unwrap();
+    let r = &v["result"];
+    assert_eq!(r["graph"]["node_counts"]["gain"], 2);
+    assert_eq!(r["graph"]["edges"][0]["from"], "oscillator");
+    assert_eq!(r["spectrum"].as_array().map(Vec::len), Some(4));
+    assert_eq!(r["rms"].as_array().map(Vec::len), Some(3));
+    assert_eq!(r["mixer_state"]["scenario_id"], "focus");
+    assert_eq!(r["mixer_envelope"], json!([]), "no interaction trace in the tracer bullet");
+    assert_eq!(r["sample_rate"], 48000);
+    assert_eq!(r["duration_ms"], 5000);
+    assert!(r["captured_at_ms"].as_u64().unwrap_or(0) > 0, "the capture is stamped");
+    assert!(r["secret_redactions"].as_u64().unwrap_or(0) >= 1, "{}", r["secret_redactions"]);
+    assert!(!v.to_string().contains(SECRET), "declared values never appear in the evidence");
+    assert_eq!(v["confidence"], "observed");
+    assert_eq!(v["environment"]["clean_room"], false);
+
+    // What it returns is exactly what web_audio_fingerprint consumes.
+    let fp = call(&e, "web_audio_fingerprint", json!({"capture": v.clone()})).unwrap();
+    assert_eq!(fp["result"]["fingerprint"]["scenario_id"], "focus");
+    assert_eq!(fp["result"]["fingerprint"]["deep_mode"], true, "the capture ran in Deep mode");
+    assert_eq!(fp["result"]["fingerprint"]["rms_envelope"].as_array().map(Vec::len), Some(3));
+}
+
+#[test]
+fn capture_refuses_durations_outside_its_window() {
+    let (url, _) = fake_cdp();
+    let e = Engine::new(crate::testing::session());
+    for duration in [0, 4_999, 120_001, 600_000] {
+        let err = capture_call(&e, json!({"cdp_endpoint": url, "duration_ms": duration})).unwrap_err();
+        assert_eq!(err.code, ErrorCode::BadInput, "{duration}: {}", err.message);
+        assert!(err.message.contains("duration_ms"), "{duration}: {}", err.message);
+    }
+}
+
+#[test]
+fn capture_runs_only_in_deep_mode() {
+    let mut session = crate::testing::session();
+    session.settings.deep_mode = false;
+    let e = Engine::new(session);
+    let err = capture_call(&e, json!({"cdp_endpoint": "http://127.0.0.1:9", "duration_ms": 5000})).unwrap_err();
+    assert_eq!(err.code, ErrorCode::FeatureMissing, "{}", err.message);
+    assert_eq!(err.details.as_ref().and_then(|d| d.get("reason")).and_then(Value::as_str), Some("clean_room"));
+    assert!(err.remediation.as_deref().unwrap_or_default().contains("Deep mode"), "{:?}", err.remediation);
 }
