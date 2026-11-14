@@ -1025,6 +1025,7 @@ Owner: open · Status: in progress
         follow-up and reopened thread through `codex_resume_smoke`; not a full rebuild
       — missing-thread stderr clears the unavailable session; parser and runner recovery
         regressions cover it. Resume argument order on older Codex releases is unverified
+      — refuse `--ephemeral` before startup; two-turn regression checks that no session is saved
 - [ ] Aider: move the message to `--message-file` once the launcher can write one (see the argv item above).
 - [x] Aider: read project-folder `.aider.conf.yml` and `.env` in `check_setup`, which needs the working directory passed into `check_native_options`.
       It reads the run's folder, the top of its git repository, then the home folder, as Aider

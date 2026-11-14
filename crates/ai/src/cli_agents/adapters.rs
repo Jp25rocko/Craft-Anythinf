@@ -826,6 +826,10 @@ impl AgentAdapter for Codex {
     }
 
     fn check_native_options(&self, options: &BackendOptions, _cwd: Option<&Path>) -> Result<(), ToolError> {
+        if options.args.iter().any(|arg| arg == "--ephemeral") {
+            return Err(ToolError::invalid("Codex's --ephemeral option does not save conversations for later turns.")
+                .with_remediation("Remove --ephemeral from this backend's arguments so Craft Anything can resume the project's conversation."));
+        }
         if options.args.iter().any(|arg| arg == "--worktree") {
             return Err(ToolError::invalid("Codex's --worktree option cannot continue this project's saved conversation.").with_remediation(
                 "Remove --worktree from this backend's arguments. To work in a worktree, select its existing folder as the project folder.",

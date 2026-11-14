@@ -647,6 +647,8 @@ launch or preview was run for this documentation correction.
   allowing the existing runner to start fresh; other stderr failures keep the session.
   The live smoke check also verified missing-thread recovery on 0.169.0-alpha.11.1;
   older Codex versions remain unverified.
+  Native runs refuse `--ephemeral` before starting Codex, because those sessions
+  are not persisted for resume; a two-turn fixture verifies no process or session is created.
   Codex 0.166.0 received the full Clean room inventory through a loopback model.
   An opt-in live adapter check on macOS with Codex 0.169.0-alpha.11.1 and gpt-6.1-sol
   verified a real MCP call, a sandboxed file write, a second turn and reopening the same

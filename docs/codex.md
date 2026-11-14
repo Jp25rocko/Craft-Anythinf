@@ -144,3 +144,9 @@ This extended check passed with 0.169.0-alpha.11.1 on macOS on 2026-11-14.
 The native adapter refuses a backend's `--worktree` option before starting any turn,
 because Codex 0.169 rejects it with resume. Select an existing worktree's folder as
 the project folder instead.
+
+The native adapter also refuses `--ephemeral` before starting a turn: Codex does
+not persist those conversations, so their reported ids cannot be resumed later.
+Remove that option to use the project's saved conversation. A two-turn subprocess
+regression checks that both attempts explain the refusal, start no Codex process
+and save no session id.

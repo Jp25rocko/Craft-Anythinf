@@ -2724,6 +2724,37 @@ echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
 
     #[cfg(unix)]
     #[test]
+    fn codex_ephemeral_is_refused_on_two_turns_without_starting_a_process() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("codex");
+        std::fs::write(
+            &program,
+            "#!/bin/sh\nd=$(dirname \"$0\")\ntouch \"$d/started\"\necho '{\"type\":\"thread.started\",\"thread_id\":\"not-persisted\"}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let config = BackendConfig { name: "Codex".into(), kind: BackendKind::AgentCli, model: "codex".into(), base_url: None, ssh_host: None, enabled: true };
+        let options = BackendOptions { command: Some(program.display().to_string()), args: vec!["--ephemeral".into()], ..Default::default() };
+        let mut c = CliConversation::new(CliSpec::new(config, options, false, None));
+        for prompt in ["first turn", "follow-up turn"] {
+            c.send(prompt);
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let mut events = Vec::new();
+            while std::time::Instant::now() < deadline && !events.iter().any(|e| matches!(e, AgentEvent::TurnDone { .. })) {
+                events.extend(c.poll());
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            c.stop();
+            assert!(events.iter().any(|e| matches!(e, AgentEvent::TurnDone { .. })), "{events:?}");
+            assert!(events.iter().any(|e| matches!(e, AgentEvent::Error { message, remediation: Some(fix), .. } if message.contains("--ephemeral") && fix.contains("Remove --ephemeral"))), "{events:?}");
+            assert_eq!(c.session_id(), None, "no unpersisted thread can be saved for resume");
+            assert!(!dir.path().join("started").exists(), "even preflight must not start Codex");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn codex_unknown_thread_is_cleared_and_the_next_turn_starts_fresh() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
