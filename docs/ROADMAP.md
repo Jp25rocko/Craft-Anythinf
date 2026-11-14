@@ -2784,6 +2784,26 @@ Owner: open · Status: in progress
       template only real calendar dates in API paths (#602–#605, by Afloat16)
 - [x] Preserve empty query pairs when matching older stand-in recordings, without treating raw
       query separators as pairs — claimed: Afloat16, branch `bugfix/r3.13-preserve-empty-query-pairs-20261103`
+- [x] Attach website tools to a person's signed-in browser through a CDP endpoint
+      (`web_site_open browser=attached` plus `web_browser_connect`), Deep only — Clean room
+      refuses attached before anything launches, the endpoint must be literal loopback, and the
+      external browser is never launched or killed.
+      — claimed: Robert Mohid, branch feature/ego-cdp-attach
+- [x] Exported-cookie mapping is documented and attached browser options are guarded: cookies from
+      `Storage.getCookies` seed a private session and are never echoed (names only).
+      — claimed: Robert Mohid, branch feature/ego-cdp-attach
+- [x] A walkthrough's evidence is named after the site the run visited, not the tab it started on
+      (`about:blank` for a launched browser).
+      — claimed: Robert Mohid, branch feature/ego-cdp-attach
+- [ ] Attached mode is unavailable when no chromium engine is locatable, because `web_site_open`
+      keeps `Requires::Engine("chromium")` even though attached mode never launches a browser.
+      Give attached its own availability path so any CDP endpoint works.
+- [ ] A walkthrough's `start_url` is sanitised but never secret-scrubbed: with zero steps (or all
+      history calls failing) a token in the start URL leaks into the evidence subject, summary and
+      location. Build `Secrets` before `start_url` or scrub the final URL once, with a test.
+- [ ] Live-proof the attached Endel capture end to end: 30 s from the signed-in ego browser
+      while Focus plays — graph, spectrum, mixer snapshot, nothing secret in the evidence
+      (`web_audio_offline_render`, fingerprint and compare already prove live).
 
 ---
 
