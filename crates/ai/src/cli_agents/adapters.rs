@@ -163,6 +163,10 @@ pub trait AgentAdapter: Send + Sync {
     fn parse(&self, _p: &mut StreamParser, _v: &Value) -> Vec<AgentEvent> {
         Vec::new()
     }
+    /// Diagnostics that an agent reports outside its JSON stream.
+    fn parse_stderr(&self, _p: &mut StreamParser, _line: &str) -> Vec<AgentEvent> {
+        Vec::new()
+    }
     /// It can continue a saved session.
     fn resumes(&self) -> bool {
         false
@@ -819,6 +823,28 @@ impl AgentAdapter for Codex {
 
     fn resumes(&self) -> bool {
         true
+    }
+
+    fn check_native_options(&self, options: &BackendOptions, _cwd: Option<&Path>) -> Result<(), ToolError> {
+        if options.args.iter().any(|arg| arg == "--worktree") {
+            return Err(ToolError::invalid("Codex's --worktree option cannot continue this project's saved conversation.").with_remediation(
+                "Remove --worktree from this backend's arguments. To work in a worktree, select its existing folder as the project folder.",
+            ));
+        }
+        Ok(())
+    }
+
+    fn parse_stderr(&self, p: &mut StreamParser, line: &str) -> Vec<AgentEvent> {
+        let diagnostic = line.trim().to_ascii_lowercase();
+        if p.session_missing || !diagnostic.starts_with("error:") || !diagnostic.contains("no rollout found for thread id ") {
+            return Vec::new();
+        }
+        p.session_missing = true;
+        vec![AgentEvent::Error {
+            message: "Codex's earlier conversation about this project isn't on this computer.".into(),
+            remediation: Some("Ask again: a new conversation starts from what the project already has.".into()),
+            log: None,
+        }]
     }
 
     /// Ask the selected CLI, not its auth file or keychain; discard raw status output.

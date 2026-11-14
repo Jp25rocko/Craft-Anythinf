@@ -12,6 +12,7 @@ fn turn(c: &mut CliConversation, prompt: &str) -> Result<(String, bool), Box<dyn
     let mut text = String::new();
     let mut listed_targets = false;
     let mut target_call = None;
+    let mut error = None;
     while Instant::now() < deadline {
         for event in c.poll() {
             match event {
@@ -30,10 +31,14 @@ fn turn(c: &mut CliConversation, prompt: &str) -> Result<(String, bool), Box<dyn
                     listed_targets |= target_call.as_deref() == Some(call_id.as_str());
                 }
                 AgentEvent::Error { message, .. } => {
-                    c.stop();
-                    return Err(message.into());
+                    error = Some(message);
                 }
-                AgentEvent::TurnDone { .. } => return Ok((text.trim().to_string(), listed_targets)),
+                AgentEvent::TurnDone { .. } => {
+                    return match error {
+                        Some(message) => Err(message.into()),
+                        None => Ok((text.trim().to_string(), listed_targets)),
+                    };
+                }
                 _ => {}
             }
         }
@@ -56,6 +61,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     spec.builder = Some(Builder { investigation: None, inbox: dir.path().join("inbox") });
     spec.preamble = Some("This is a bounded adapter smoke check. Only perform the requested actions in the working folder. ".into());
     let mut c = CliConversation::new(spec.clone());
+    if std::env::args().nth(2).as_deref() == Some("--missing-thread") {
+        let mut missing = spec.clone();
+        missing.resume = Some("00000000-0000-0000-0000-000000000000".into());
+        c = CliConversation::new(missing);
+        if turn(&mut c, "Reply READY without tools.").is_ok() || !c.session_lost() || c.session_id().is_some() {
+            return Err("An unknown thread was not reported and cleared".into());
+        }
+        println!("PASS: unknown thread reported and cleared; testing a fresh turn next.");
+    }
     let (reply, tool_ok) = turn(
         &mut c,
         "Remember the marker amber-sail-47 in this conversation. Call Craft Anything's core_targets_list MCP tool. Create smoke.txt containing exactly amber-sail-47 in the working folder. Do not use any other tools except those needed to create the file. Reply exactly READY.",

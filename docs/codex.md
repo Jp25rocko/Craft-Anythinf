@@ -127,3 +127,20 @@ It does not test a complete Study → Build → Check → Ready project or GUI b
 
 This check passed on macOS with Codex CLI 0.169.0-alpha.11.1 and `gpt-6.1-sol`
 on 2026-11-14, using an existing ChatGPT sign-in.
+
+Resume argument order (including `--sandbox` before `resume`) has been live-checked
+only on Codex 0.169.0-alpha.11.1. Older releases, including 0.167, have not been
+verified with this adapter; passing `--sandbox` after `resume` is not supported by
+the checked CLI. The overlapping PR #1805 reports a config-override approach on 0.167.
+
+A missing saved thread is reported on stderr as `no rollout found for thread id`.
+The adapter marks the session missing, clears the saved id and explains that asking
+again starts a fresh conversation. Other stderr failures do not clear the session.
+To include this recovery in the manual live check, append `--missing-thread` after
+the model argument. It first tries a deliberately nonexistent id and then runs
+the normal fresh-turn, follow-up and reopened-session checks.
+This extended check passed with 0.169.0-alpha.11.1 on macOS on 2026-11-14.
+
+The native adapter refuses a backend's `--worktree` option before starting any turn,
+because Codex 0.169 rejects it with resume. Select an existing worktree's folder as
+the project folder instead.

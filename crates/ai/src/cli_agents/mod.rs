@@ -1066,6 +1066,7 @@ fn run_cli(spec: &CliSpec, text: &str, retry: bool, tx: &Sender<AgentEvent>, sto
     let (held2, agent2, program2, host2) = (held.clone(), agent.clone(), program.clone(), remote.clone());
     let parser = Arc::new(Mutex::new(StreamParser::new(adapter.clone())));
     let (p2, tx2, tx_err, lost2, failure2) = (parser.clone(), tx.clone(), tx.clone(), lost.clone(), failure.clone());
+    let (stderr_parser, stderr_lost) = (parser.clone(), lost.clone());
     let failed_tools = Arc::new(AtomicBool::new(false));
     let (failed_tools2, failed_tools3) = (failed_tools.clone(), failed_tools.clone());
     let stop2 = stop.clone();
@@ -1119,6 +1120,16 @@ fn run_cli(spec: &CliSpec, text: &str, retry: bool, tx: &Sender<AgentEvent>, sto
             }
         })
         .on_stderr_line(move |l| {
+            let mut p = stderr_parser.lock().unwrap_or_else(PoisonError::into_inner);
+            let adapter = p.adapter.clone();
+            let events = adapter.parse_stderr(&mut p, l);
+            if p.session_missing {
+                stderr_lost.store(true, Ordering::SeqCst);
+            }
+            drop(p);
+            for event in events {
+                let _ = tx_err.send(event);
+            }
             if !l.trim().is_empty() {
                 let _ = tx_err.send(AgentEvent::Output { text: l.to_string() });
             }
@@ -2677,6 +2688,85 @@ echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
             assert!(!argv.contains("P:"), "{argv}");
             assert_eq!(argv.lines().last(), Some("-"), "{argv}");
             assert_eq!(argv.lines().take(2).collect::<Vec<_>>(), ["exec", "--json"]);
+        }
+    }
+
+    #[test]
+    fn codex_missing_thread_diagnostics_are_specific() {
+        let adapter = adapter_for("codex");
+        for diagnostic in ["Error: network timeout", "Error: thread/resume: authentication failed", "warning: no rollout found for thread id example"] {
+            let mut p = StreamParser::new(adapter.clone());
+            assert!(adapter.parse_stderr(&mut p, diagnostic).is_empty());
+            assert!(!p.session_missing);
+        }
+        for diagnostic in [
+            "Error: no rollout found for thread id missing",
+            "Error: thread/resume: thread/resume failed: no rollout found for thread id missing (code -32600)",
+        ] {
+            let mut p = StreamParser::new(adapter.clone());
+            assert!(
+                matches!(adapter.parse_stderr(&mut p, diagnostic).as_slice(), [AgentEvent::Error { remediation: Some(fix), .. }] if fix.contains("Ask again"))
+            );
+            assert!(p.session_missing);
+            assert!(adapter.parse_stderr(&mut p, diagnostic).is_empty());
+        }
+    }
+
+    #[test]
+    fn codex_refuses_worktree_before_starting_a_conversation() {
+        let adapter = adapter_for("codex");
+        let options = BackendOptions { args: vec!["--worktree".into()], ..Default::default() };
+        let error = adapter.check_native_options(&options, None).unwrap_err();
+        assert!(error.message.contains("--worktree"));
+        assert!(error.remediation.as_deref().unwrap_or_default().contains("existing folder"));
+        assert!(adapter.check_native_options(&BackendOptions::default(), None).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_unknown_thread_is_cleared_and_the_next_turn_starts_fresh() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("codex");
+        std::fs::write(
+            &program,
+            r#"#!/bin/sh
+d=$(dirname "$0")
+if [ "$2" = "--help" ]; then echo "--json"; exit 0; fi
+printf '%s\n' "$@" > "$d/argv"
+cat > "$d/stdin"
+for arg in "$@"; do
+  if [ "$arg" = missing-thread ]; then
+    echo 'Error: thread/resume: thread/resume failed: no rollout found for thread id missing-thread (code -32600)' >&2
+    exit 1
+  fi
+done
+echo '{"type":"thread.started","thread_id":"new-thread"}'
+echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let config = BackendConfig { name: "Codex".into(), kind: BackendKind::AgentCli, model: "codex".into(), base_url: None, ssh_host: None, enabled: true };
+        let options = BackendOptions { command: Some(program.display().to_string()), ..Default::default() };
+        let mut spec = CliSpec::new(config, options, false, None);
+        spec.resume = Some("missing-thread".into());
+        let mut c = CliConversation::new(spec);
+        for missing in [true, false] {
+            c.send("the original request");
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let mut events = Vec::new();
+            while std::time::Instant::now() < deadline && !events.iter().any(|e| matches!(e, AgentEvent::TurnDone { .. })) {
+                events.extend(c.poll());
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            c.stop();
+            assert!(events.iter().any(|e| matches!(e, AgentEvent::TurnDone { .. })), "{events:?}");
+            assert_eq!(c.session_lost(), missing);
+            assert_eq!(c.session_id().as_deref(), if missing { None } else { Some("new-thread") });
+            assert_eq!(events.iter().filter(|e| matches!(e, AgentEvent::Error { .. })).count(), usize::from(missing));
+            let argv = std::fs::read_to_string(dir.path().join("argv")).unwrap();
+            assert_eq!(argv.lines().any(|arg| arg == "resume"), missing);
         }
     }
 
