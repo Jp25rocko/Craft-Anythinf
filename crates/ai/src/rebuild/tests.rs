@@ -383,7 +383,7 @@ fn a_launcher_leads_to_the_game_and_its_files() {
     assert!(inv.contains("Read-me and licence files: 1 files") && !inv.contains("Settings and scripts"), "{inv}");
 }
 
-/// A Windows game's folder copied to Linux or macOS, as Yoda Stories' is: no file has an executable
+/// A 1990s Windows game's folder copied to Linux or macOS: no file has an executable
 /// bit, so only counting programs this computer can start found none, and Deep mode skipped Ghidra.
 #[test]
 fn a_windows_games_folder_has_its_program_on_every_system() {
@@ -391,20 +391,20 @@ fn a_windows_games_folder_has_its_program_on_every_system() {
     let game = d.path();
     std::fs::create_dir_all(game.join("Install")).unwrap();
     for (name, bytes) in [
-        ("Yodesk.exe", 454),
-        ("Yodaplay.exe", 173),
+        ("Game.exe", 454),
+        ("Launcher.exe", 173),
         ("setup.exe", 900),         // bigger, but an installer
         ("Install/setup.exe", 800), // the same, one folder down
         ("MSVCRT40.DLL", 1000),     // bigger still, but a library, not the game
-        ("yodesk.dta", 4600),
+        ("game.dat", 4600),
     ] {
         std::fs::write(game.join(name), vec![0u8; bytes]).unwrap();
     }
-    assert_eq!(locate(game, "game"), (game.join("Yodesk.exe"), Some(game.to_path_buf())), "the game's own program");
+    assert_eq!(locate(game, "game"), (game.join("Game.exe"), Some(game.to_path_buf())), "the game's own program");
     let bat = game.join("play.bat");
-    std::fs::write(&bat, "start Yodaplay.exe\n").unwrap();
-    assert_eq!(locate(&bat, "app").0, game.join("Yodaplay.exe"), "the program a launcher starts");
-    assert!(studies_as_program(&game.join("YODESK.EXE")) && !studies_as_program(&game.join("MSVCRT40.DLL")));
+    std::fs::write(&bat, "start Launcher.exe\n").unwrap();
+    assert_eq!(locate(&bat, "app").0, game.join("Launcher.exe"), "the program a launcher starts");
+    assert!(studies_as_program(&game.join("GAME.EXE")) && !studies_as_program(&game.join("MSVCRT40.DLL")));
 }
 
 #[test]

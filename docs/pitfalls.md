@@ -782,7 +782,7 @@ only the main one: list each command we run (`run`, `api`, `session delete`) and
 
 **"Can it start here?" used for "is it a program?"** The study's search of a picked folder took
 the biggest file `outputs::is_program` accepted, which on Linux and macOS means no extension and an
-executable bit. A Windows game copied there (Yoda Stories) has neither, so no program was found and
+executable bit. A 1990s Windows game copied there has neither, so no program was found and
 Deep mode skipped Ghidra; the tests named their programs the local way on each system, so none had
 a Windows game on Linux. When a check answers one question, don't reuse it for a neighbouring one:
 studying a program and starting it are separate (`studies_as_program`), and test the other
