@@ -1193,3 +1193,33 @@ fn mismatched_envelope_lengths_still_compare() {
     assert!(distance.is_finite() && distance < 0.02, "resampled distance {distance}");
     assert!(cmp["limitations"].as_array().unwrap().iter().any(|l| l["code"] == "envelope_resampled"), "{}", cmp["limitations"]);
 }
+
+#[test]
+fn graph_diff_reports_added_and_removed_nodes_and_edges() {
+    let e = Engine::new(crate::testing::session());
+    let fingerprint = |counts: Value, edges: Value| {
+        call(&e, "web_audio_fingerprint", json!({"spectrum": [1.0, 2.0], "rms": [0.5], "graph": {"node_counts": counts, "edges": edges}})).unwrap()
+    };
+    let before = fingerprint(json!({"gain": 2, "oscillator": 1}), json!([{"from": "osc", "to": "gain", "kind": "audio"}]));
+    let after = fingerprint(json!({"gain": 3}), json!([]));
+    let cmp = call(&e, "web_audio_compare", json!({"before": before, "after": after})).unwrap();
+    let diff = &cmp["result"]["graph_diff"];
+    assert_eq!(diff["same"], false, "{diff}");
+    assert_eq!(diff["added_nodes"]["gain"], 1, "{diff}");
+    assert_eq!(diff["removed_nodes"]["oscillator"], 1, "{diff}");
+    assert_eq!(diff["added_edges"], json!([]), "{diff}");
+    assert_eq!(diff["removed_edges"], json!([{"from": "osc", "to": "gain", "kind": "audio"}]), "{diff}");
+    assert_eq!(cmp["result"]["likeness_pass"], true, "the spectrum and loudness are unchanged");
+}
+
+#[test]
+fn unequal_rms_envelopes_are_resampled_with_a_limitation() {
+    let e = Engine::new(crate::testing::session());
+    let before = call(&e, "web_audio_fingerprint", json!({"spectrum": [1.0, 2.0], "rms": [0.2, 0.4, 0.6]})).unwrap();
+    let after = call(&e, "web_audio_fingerprint", json!({"spectrum": [1.0, 2.0], "rms": [0.2, 0.3, 0.4, 0.5, 0.6]})).unwrap();
+    let cmp = call(&e, "web_audio_compare", json!({"before": before, "after": after})).unwrap();
+    let correlation = cmp["result"]["rms_correlation"].as_f64().unwrap_or(f64::NAN);
+    assert!(correlation.is_finite() && correlation > 0.99, "interpolated correlation {correlation}");
+    assert_eq!(cmp["result"]["likeness_pass"], true);
+    assert!(cmp["limitations"].as_array().unwrap().iter().any(|l| l["code"] == "rms_resampled"), "{}", cmp["limitations"]);
+}

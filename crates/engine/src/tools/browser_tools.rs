@@ -1866,6 +1866,16 @@ fn web_audio_compare(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, Too
             "At least one side has no spectral or loudness energy (silence, or an analyser that returned zeros); the verdict cannot pass.",
         ));
     }
+    if before.rms_envelope.len() != after.rms_envelope.len() {
+        builder = builder.limitation(Limitation::new(
+            "rms_resampled",
+            format!(
+                "The two RMS envelopes have different lengths ({} and {} values) and were proportionally resampled before their correlation was measured.",
+                before.rms_envelope.len(),
+                after.rms_envelope.len()
+            ),
+        ));
+    }
     if before.mixer_envelope.len() != after.mixer_envelope.len() && !before.mixer_envelope.is_empty() && !after.mixer_envelope.is_empty() {
         builder = builder.limitation(Limitation::new(
             "envelope_resampled",
