@@ -357,12 +357,54 @@ pub fn build_args(
     resume: Option<&str>,
     access: Access,
 ) -> Vec<String> {
+    args_for(adapter, opts, prompt, preamble, mcp, resume, access, None)
+}
+
+/// [`build_args`], with the message already written to `message_file` for an adapter that
+/// [reads it there](AgentAdapter::reads_message_file).
+#[expect(clippy::too_many_arguments, reason = "build_args' inputs and the file")]
+fn args_for(
+    adapter: &dyn AgentAdapter,
+    opts: &BackendOptions,
+    prompt: &str,
+    preamble: &str,
+    mcp: &McpCommand,
+    resume: Option<&str>,
+    access: Access,
+    message_file: Option<&Path>,
+) -> Vec<String> {
     // A leading dash would be read as a flag.
     let prompt = if prompt.starts_with('-') { format!(" {prompt}") } else { prompt.to_string() };
     let builder = matches!(access, Access::Build | Access::CleanRoomBuild);
     let question = matches!(access, Access::Question | Access::CleanRoomQuestion);
     let reads_checked = matches!(access, Access::CleanRoomBuild | Access::CleanRoomQuestion | Access::CleanRoomAnalyse);
-    adapter.args(&ArgsCx { options: opts, prompt: &prompt, preamble, mcp, resume, builder, reads_checked, question })
+    adapter.args(&ArgsCx { options: opts, prompt: &prompt, preamble, mcp, resume, builder, reads_checked, question, message_file })
+}
+
+/// The message written to a private file for one run, removed when the run is over.
+struct MessageFile(PathBuf);
+
+impl MessageFile {
+    /// None when it couldn't be written: the message then goes in argv as before.
+    fn write(dir: &Path, text: &str) -> Option<Self> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+        let path = dir.join(format!("craft-anything-message-{}-{nanos}-{n}.txt", std::process::id()));
+        match craft_anything_platform::fs::write_atomic_private(&path, text.as_bytes()) {
+            Ok(()) => Some(Self(path)),
+            Err(e) => {
+                log::warn!("couldn't write the message to a file, so it goes on the command line: {}", e.message);
+                None
+            }
+        }
+    }
+}
+
+impl Drop for MessageFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 /// What a run may do with files: a question reads only, a builder builds, anything else analyses;
@@ -1016,7 +1058,11 @@ fn run_cli(spec: &CliSpec, text: &str, retry: bool, tx: &Sender<AgentEvent>, sto
         return nothing_done(&name);
     }
     let access = access_for(spec.builder.is_some(), spec.deep, spec.question);
-    let args = build_args(adapter.as_ref(), &spec.options, text, &preamble, &mcp, if adapter.resumes() { resume.as_deref() } else { None }, access);
+    // Kept until the run is over; over SSH the file would be on the wrong computer.
+    let message_file =
+        (remote.is_none() && adapter.reads_message_file()).then(|| MessageFile::write(&std::env::temp_dir(), &format!("{preamble}{text}"))).flatten();
+    let resume_arg = if adapter.resumes() { resume.as_deref() } else { None };
+    let args = args_for(adapter.as_ref(), &spec.options, text, &preamble, &mcp, resume_arg, access, message_file.as_ref().map(|f| f.0.as_path()));
     let shown = FailureContext::new(&program, &args, text, remote.as_deref(), spec);
     // A builder turn may take hours and sit silent for long stretches: Ghidra's first look at a big
     // game, an engine build, or the person answering a question. Claude Code's own limits are
@@ -2697,6 +2743,61 @@ echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
             assert_eq!(argv.lines().last(), Some("-"), "{argv}");
             assert_eq!(argv.lines().take(2).collect::<Vec<_>>(), ["exec", "--json"]);
         }
+    }
+
+    /// #402 for Aider: a stand-in `aider` finds the whole message (preamble first) in the file
+    /// `--message-file` names, for a short message and one longer than Windows' command line, and
+    /// the file is gone once the run is over.
+    #[cfg(unix)]
+    #[test]
+    fn aider_reads_its_message_from_a_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("aider");
+        let script = r#"#!/bin/sh
+d=$(dirname "$0")
+if [ "$1" = "--help" ]; then echo "--message-file --message --no-fancy-input --no-git"; exit 0; fi
+printf '%s\n' "$@" > "$d/argv"
+while [ $# -gt 1 ]; do if [ "$1" = "--message-file" ]; then cp "$2" "$d/message"; echo "$2" > "$d/file"; fi; shift; done
+"#;
+        std::fs::write(&program, script).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for prompt in ["q".to_string(), "x".repeat(40_831)] {
+            let config =
+                BackendConfig { name: "Aider".into(), kind: BackendKind::AgentCli, model: "aider".into(), base_url: None, ssh_host: None, enabled: true };
+            let options =
+                BackendOptions { command: Some(program.display().to_string()), cli_model: Some("anthropic/claude-sonnet-4".into()), ..Default::default() };
+            let mut spec = CliSpec::new(config, options, false, None);
+            spec.preamble = Some("P:".into());
+            let mut c = CliConversation::new(spec);
+            c.send(&prompt);
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let mut all = Vec::new();
+            while std::time::Instant::now() < deadline && !all.iter().any(|e| matches!(e, AgentEvent::TurnDone { .. })) {
+                all.extend(c.poll());
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let message = std::fs::read_to_string(dir.path().join("message")).unwrap_or_default();
+            let argv = std::fs::read_to_string(dir.path().join("argv")).unwrap_or_default();
+            assert!(message == format!("P:{prompt}"), "the whole message, preamble first: {all:?}");
+            assert!(!argv.contains("P:") && !argv.lines().any(|l| l == "--message"), "{argv}");
+            let file = std::fs::read_to_string(dir.path().join("file")).unwrap_or_default();
+            assert!(!file.trim().is_empty() && !Path::new(file.trim()).exists(), "the message file is removed after the run: {file}");
+        }
+    }
+
+    #[test]
+    fn a_message_file_holds_the_message_until_it_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = MessageFile::write(dir.path(), "P:make a game").unwrap();
+        let other = MessageFile::write(dir.path(), "another run").unwrap();
+        assert_ne!(file.0, other.0, "two runs at once get two files");
+        assert_eq!(std::fs::read_to_string(&file.0).unwrap(), "P:make a game");
+        let path = file.0.clone();
+        drop(file);
+        assert!(!path.exists(), "removed when the run is over");
+        std::fs::write(dir.path().join("a-file"), "").unwrap();
+        assert!(MessageFile::write(&dir.path().join("a-file"), "x").is_none(), "a folder that can't be written: the message goes in argv");
     }
 
     #[test]

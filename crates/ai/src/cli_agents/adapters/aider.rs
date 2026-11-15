@@ -1,7 +1,8 @@
-//! Aider (`aider --message`).
+//! Aider (`aider --message-file`).
 //!
-//! Aider reads positional arguments as files to edit, so the message goes to `--message`. The
-//! plain adapter passed it as a file name and every run stopped at once (#72).
+//! Aider reads positional arguments as files to edit, so the message goes to `--message-file`
+//! (`--message` over SSH, where no file is written). The plain adapter passed it as a file name
+//! and every run stopped at once (#72); a brief in argv passed Windows' command-line limit (#402).
 //!
 //! A one-shot run still asks questions and can open pages before the model is reached: it offers
 //! to make a git repository and to add `.aider*` to `.gitignore`, checks for a new version, shows
@@ -83,15 +84,22 @@ impl AgentAdapter for Aider {
         }
         a.extend(cx.options.args.iter().cloned());
         // Last, so a saved extra argument can't be mistaken for the message.
-        a.extend(["--message".into(), format!("{}{}", cx.preamble, cx.prompt)]);
+        match cx.message_file {
+            Some(file) => a.extend(["--message-file".into(), file.display().to_string()]),
+            None => a.extend(["--message".into(), format!("{}{}", cx.preamble, cx.prompt)]),
+        }
         a
+    }
+
+    fn reads_message_file(&self) -> bool {
+        true
     }
 
     /// The message flag and the two that keep a run from asking about git or the console. Aider's
     /// plain form reads the prompt as a file name, so a failed check keeps this adapter rather
     /// than falling back to the plain one (#72).
     fn required_flags(&self) -> (&'static [&'static str], &'static [&'static str]) {
-        (&["--help"], &["--message", "--no-fancy-input", "--no-git"])
+        (&["--help"], &["--message-file", "--message", "--no-fancy-input", "--no-git"])
     }
 
     fn plain_fallback(&self) -> bool {
@@ -297,8 +305,31 @@ mod tests {
     use super::*;
 
     fn args(builder: bool, options: &BackendOptions) -> Vec<String> {
+        args_with(builder, options, None)
+    }
+
+    fn args_with(builder: bool, options: &BackendOptions, message_file: Option<&Path>) -> Vec<String> {
         let mcp = McpCommand { command: "craft-anything-cli".into(), args: vec!["mcp".into()], notes: None };
-        Aider.args(&ArgsCx { options, prompt: "make a game", preamble: "PRE ", mcp: &mcp, resume: None, builder, reads_checked: false, question: false })
+        Aider.args(&ArgsCx {
+            options,
+            prompt: "make a game",
+            preamble: "PRE ",
+            mcp: &mcp,
+            resume: None,
+            builder,
+            reads_checked: false,
+            question: false,
+            message_file,
+        })
+    }
+
+    #[test]
+    fn a_written_message_goes_in_by_its_file() {
+        let file = Path::new("message.txt");
+        let a = args_with(true, &BackendOptions::default(), Some(file));
+        assert_eq!(&a[a.len() - 2..], ["--message-file".to_string(), file.display().to_string()]);
+        assert!(!a.iter().any(|x| x == "--message" || x.contains("make a game")), "the message stays off the command line: {a:?}");
+        assert!(Aider.reads_message_file());
     }
 
     /// A check with no keys in the environment and no home folder, as on a fresh computer.
@@ -339,7 +370,7 @@ mod tests {
     #[test]
     fn aider_is_registered_and_never_run_plain() {
         assert!(AgentAdapters::built_in().for_agent("aider").ids().contains(&"aider"), "registered, not the plain adapter");
-        assert_eq!(Aider.required_flags(), (&["--help"][..], &["--message", "--no-fancy-input", "--no-git"][..]));
+        assert_eq!(Aider.required_flags(), (&["--help"][..], &["--message-file", "--message", "--no-fancy-input", "--no-git"][..]));
         assert!(!Aider.plain_fallback() && !Aider.streams_json());
     }
 

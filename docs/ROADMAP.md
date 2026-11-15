@@ -1036,7 +1036,10 @@ Owner: open · Status: in progress
       — missing-thread stderr clears the unavailable session; parser and runner recovery
         regressions cover it. Resume argument order on older Codex releases is unverified
       — refuse `--ephemeral` before startup; two-turn regression checks that no session is saved
-- [ ] Aider: move the message to `--message-file` once the launcher can write one (see the argv item above).
+- [x] Aider: move the message to `--message-file` once the launcher can write one (see the argv item above).
+      A local run writes the message (preamble first) to a private file in the temp folder,
+      passes `--message-file`, and removes the file when the run is over; a file that can't be
+      written falls back to `--message` (`reads_message_file`, `ArgsCx::message_file`)
       — claimed: justinjohn0306, branch feature/r2.2-aider-message-file
 - [x] Aider: read project-folder `.aider.conf.yml` and `.env` in `check_setup`, which needs the working directory passed into `check_native_options`.
       It reads the run's folder, the top of its git repository, then the home folder, as Aider
@@ -1047,10 +1050,12 @@ Owner: open · Status: in progress
       V1 and V2), so a long one can't pass Windows' command-line limit (#402), as Claude Code, Codex,
       Gemini CLI and DeepSeek Harness already do
       — claimed: FuryNocturn, branch feature/r2.2-message-off-argv
-- [ ] Aider, Hermes, Maki, Devin and Antigravity still take the message in argv
-      (`prompt_on_stdin`), so a long one can pass Windows' command-line limit (#402). Aider has
-      `--message-file`, which needs a file the run writes (on the remote host over SSH); for the
-      others, find in their source whether they read a message from stdin or a file
+- [ ] Hermes, Maki, Devin and Antigravity still take the message in argv (`prompt_on_stdin`),
+      and Aider still does over SSH, so a long one can pass Windows' command-line limit (#402).
+      Aider over SSH needs the file written on the remote host. Hermes' `-z` takes its message
+      only in argv; `hermes chat -Q --query-file -` reads it from stdin, but that is the chat
+      path, not `-z`'s one-shot run, so check what it prints and approves before moving to it.
+      For the others, find in their source whether they read a message from stdin or a file
 - [ ] A note sent during a build reaches the builder at its next step on other coding agents with
       tool hooks, and on the API-backend loop between tool calls (Claude Code only today)
 - [ ] Session copies for other agents that keep sessions (ACP agents' `session/load`) (#451)

@@ -40,6 +40,9 @@ pub struct ArgsCx<'a> {
     /// A question about a build: only reading (none in Clean room), no tool server, and a fresh
     /// session or a fork that leaves the builder's session unchanged.
     pub question: bool,
+    /// Where the message was written, for an adapter that [reads it from a file](AgentAdapter::reads_message_file);
+    /// None over SSH, or when the file couldn't be written, and the message goes in argv.
+    pub message_file: Option<&'a Path>,
 }
 
 /// One way of driving an agent CLI.
@@ -179,6 +182,12 @@ pub trait AgentAdapter: Send + Sync {
     /// The message goes in on stdin, not in argv: a long one passes Windows' command-line limit
     /// ("The filename or extension is too long", os error 206, #402).
     fn prompt_on_stdin(&self) -> bool {
+        false
+    }
+    /// The message (preamble first) goes in a file on this computer, named in
+    /// [`ArgsCx::message_file`], for an agent that reads one but not stdin: a long one passes
+    /// Windows' command-line limit too (#402).
+    fn reads_message_file(&self) -> bool {
         false
     }
     /// What goes in on stdin when [`prompt_on_stdin`](AgentAdapter::prompt_on_stdin) says so:
