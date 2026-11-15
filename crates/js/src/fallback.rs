@@ -32,6 +32,15 @@ pub(crate) fn facts_from_tokens(tokens: &[Token<'_>], lines: &LineIndex) -> Modu
                     f.imports.push(ImportRef { kind: kind.into(), specifier: spec, literal: true, names: Vec::new(), line, offset: off });
                 }
             }
+            (TokKind::Ident, "import")
+                if matches!(at(i + 1), Some((TokKind::Str, _))) && (i == 0 || !matches!(at(i - 1), Some((TokKind::Punct, "." | "?.")))) =>
+            {
+                if let Some((TokKind::Str, s)) = at(i + 1)
+                    && f.imports.len() < crate::facts::MAX_LIST
+                {
+                    f.imports.push(ImportRef { kind: "import".into(), specifier: string_value(s), literal: true, names: Vec::new(), line, offset: off });
+                }
+            }
             (TokKind::Ident, "from") => {
                 if let Some((TokKind::Str, s)) = at(i + 1)
                     && f.imports.len() < crate::facts::MAX_LIST
