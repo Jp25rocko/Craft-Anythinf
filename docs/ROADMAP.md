@@ -1756,11 +1756,15 @@ Gaps found while using the app for real projects.
       over SSH (a tunnelled model) builds on this computer (review of #1846): skip it only
       when the builder's tools run on the other computer (`tools_run_remotely`)
       — claimed: justinjohn0306, branch bugfix/r2.9-cargo-check-api-over-ssh
-- [ ] A project moved to another stack mid-build keeps its recorded stack (only package.json
+- [x] A project moved to another stack mid-build keeps its recorded stack (only package.json
       updates it), and the build check runs `cargo build` whenever app/Cargo.toml is there, so
       a Rust project rewritten in Python is still checked with Cargo until the old manifest is
       moved out (#1837): record the stack from what was built for every toolchain, and check
-      with that
+      with that. A toolchain counts only when it has both its marker and source files (a stale
+      Cargo.toml without Rust gives way to Python), the check uses the recorded
+      `build_toolchain`/stack toolchain before the Cargo/package shortcuts, and a matching
+      stack replaces the recorded one; game engines keep theirs. `build_toolchain` is craft.json
+      v6; old manifests migrate with none recorded.
       — claimed: AlexJoaquimPereira, branch bugfix/r2.9-stack-recording
 - [x] One design system for the desktop app: a typed scale (text sizes, gaps, padding, icon and
       control sizes) in `theme.rs`, one set of buttons (primary, secondary, ghost, danger),
@@ -2962,4 +2966,4 @@ Looked at and not committed to; none of this is open work. Say in the issue if y
   (#175), an HTTPS intercepting proxy (#164), VM and Windows Sandbox detonation (#144, #163), an
   adapter for another disassembler (#147)
 - More providers and agents (#14, #63, #97, #162, #170, #186, #206, #470): R2.2's table comes first,
- 
+  so each new one is a small addition rather than another half-wired agent
