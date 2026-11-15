@@ -804,6 +804,10 @@ Owner: open · Status: in progress
       pass, which fails SonarCloud's reliability gate on `main` (java:S1751): take the first
       function from the iterator instead — claimed: justinjohn0306, branch
       `bugfix/r1.5-ghidra-sweep-next-function`
+- [ ] Stop Ghidra's one-time analysis when the project whose build started it is deleted (#948):
+      it carried on, with a core and gigabytes of memory, until the app closed. Pausing still
+      leaves it running, so a paused build loses nothing
+      — claimed: justinjohn0306, branch `bugfix/r1.5-stop-analysis-for-deleted-project`
 - [ ] More pins once their hashes are checked against the publisher: Chromium (no published
       checksums found yet), Rizin for Linux (the tar.xz unpacks to ~800 MB, so it needs streaming
       extraction) and macOS (a .pkg)
