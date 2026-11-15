@@ -296,6 +296,10 @@ only when it's green and a maintainer has fully reviewed it, code as well as wor
 - [x] Limit the decision line above to what was measured (one RX 6900 XT, one driver, one Windows
       build) and say other Radeons and drivers aren't checked (#912 review)
       — claimed: 00xJS, branch docs/r5.2-radeon-idle-scope
+- [ ] Without a GPU (a VM over RDP, WARP) every frame costs about 0.3 s on all cores, so moving the
+      mouse or clicking keeps the CPU at 100% for as long as it lasts: WARP reads a texture through
+      wgpu's DX12 sampler heap about ten times slower than it loads one. Filter by hand on WARP
+      — claimed: Claude, branch bugfix/r5.2-warp-texture-filtering
 - [x] STATUS.md has rows twice, kept by squash merges of PRs that edited the same row: OpenCode
       models and thinking (three copies that disagree about SSH), Claude desktop app without Claude
       Code, Websites as targets, Desktop app and CLI; `docs/opencode.md` has a paragraph twice.
