@@ -551,6 +551,12 @@ but POSIX makes everything after `=` the header, so FreeBSD's `ps` printed one `
 ",ppid=" and every parent lookup came back empty. Give each column its own `-o` (`-o pid= -o ppid=`)
 when a header is renamed or blanked.
 
+**Idle CPU passed while every frame cost a third of a second.** WARP was checked by leaving the window
+alone (busy for 5 s after start, then 0%), so nobody saw that each frame of a maximized window took
+about 0.3 s on every core: on a VM without a GPU, moving the mouse or clicking kept the CPU at 100%.
+Measure a renderer with frames being drawn too: move the mouse over the window and count frames, or
+redraw continuously, and compare the cost of one frame.
+
 ## Design
 
 **A source inventory limit came after expansion.** Taking five thousand names after collecting
