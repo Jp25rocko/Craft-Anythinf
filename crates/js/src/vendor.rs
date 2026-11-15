@@ -9,9 +9,11 @@ pub fn banner_vendor(comment: &str, line: u32) -> Option<Vendor> {
     if !is_banner {
         return None;
     }
+    // A slash separates words as before (`https://mths.be/punycode v1.4.1` names `punycode`),
+    // except inside a word that starts with `@`: a scoped package name (`@scope/pkg`).
     let words: Vec<&str> = head
         .split(|c: char| c.is_whitespace() || c == '*' || c == '!' || c == '|' || c == ',')
-        .map(|w| w.trim_matches('/'))
+        .flat_map(|w| if w.starts_with('@') { vec![w.trim_end_matches('/')] } else { w.split('/').collect() })
         .filter(|w| !w.is_empty())
         .collect();
     for (i, w) in words.iter().enumerate() {
