@@ -236,6 +236,8 @@ impl Default for RendererOptions {
 /// Renderer for a egui based GUI.
 pub struct Renderer {
     pipeline: wgpu::RenderPipeline,
+    /// Craft Anything: with manual filtering, the pipeline for textures it can't draw (see `new`).
+    hardware_pipeline: Option<wgpu::RenderPipeline>,
 
     index_buffer: SlicedBuffer,
     vertex_buffer: SlicedBuffer,
@@ -370,7 +372,8 @@ impl Renderer {
                 bias: wgpu::DepthBiasState::default(),
             });
 
-        let pipeline = {
+        // Craft Anything: `hardware_filtering` sets `HARDWARE_FILTERING` in egui.wgsl.
+        let create_pipeline = |hardware_filtering: bool| {
             profiling::scope!("create_render_pipeline");
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("egui_pipeline"),
@@ -397,7 +400,7 @@ impl Renderer {
                     polygon_mode: wgpu::PolygonMode::default(),
                     strip_index_format: None,
                 },
-                depth_stencil,
+                depth_stencil: depth_stencil.clone(),
                 multisample: wgpu::MultisampleState {
                     alpha_to_coverage_enabled: false,
                     count: options.msaa_samples.max(1),
@@ -430,7 +433,7 @@ impl Renderer {
                     })],
                     // Craft Anything: see `HARDWARE_FILTERING` in egui.wgsl.
                     compilation_options: wgpu::PipelineCompilationOptions {
-                        constants: &[("HARDWARE_FILTERING", if options.predictable_texture_filtering { 0.0 } else { 1.0 })],
+                        constants: &[("HARDWARE_FILTERING", if hardware_filtering { 1.0 } else { 0.0 })],
                         ..Default::default()
                     },
                 }),
@@ -439,6 +442,10 @@ impl Renderer {
             }
         )
         };
+        let pipeline = create_pipeline(!options.predictable_texture_filtering);
+        // Craft Anything: manual filtering is bilinear and clamps to the edge. Textures with other
+        // options, or with a sampler of their own, are drawn with hardware filtering.
+        let hardware_pipeline = options.predictable_texture_filtering.then(|| create_pipeline(true));
 
         const VERTEX_BUFFER_START_CAPACITY: wgpu::BufferAddress =
             (core::mem::size_of::<Vertex>() * 1024) as _;
@@ -447,6 +454,7 @@ impl Renderer {
 
         Self {
             pipeline,
+            hardware_pipeline,
             vertex_buffer: SlicedBuffer {
                 buffer: create_vertex_buffer(device, VERTEX_BUFFER_START_CAPACITY),
                 slices: Vec::with_capacity(64),
@@ -494,6 +502,8 @@ impl Renderer {
         // Whether or not we need to reset the render pass because a paint callback has just
         // run.
         let mut needs_reset = true;
+        // Craft Anything: whether `hardware_pipeline` is the one set.
+        let mut on_hardware = false;
 
         let mut index_buffer_slices = self.index_buffer.slices.iter();
         let mut vertex_buffer_slices = self.vertex_buffer.slices.iter();
@@ -513,6 +523,7 @@ impl Renderer {
                     1.0,
                 );
                 render_pass.set_pipeline(&self.pipeline);
+                on_hardware = false;
                 render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
                 needs_reset = false;
             }
@@ -546,7 +557,14 @@ impl Renderer {
                         .next()
                         .expect("You must call .update_buffers() before .render()");
 
-                    if let Some(Texture { bind_group, .. }) = self.textures.get(&mesh.texture_id) {
+                    if let Some(Texture { bind_group, options, .. }) = self.textures.get(&mesh.texture_id) {
+                        if let Some(hardware) = &self.hardware_pipeline {
+                            let wants_hardware = !options.is_some_and(manual_filtering_draws);
+                            if wants_hardware != on_hardware {
+                                render_pass.set_pipeline(if wants_hardware { hardware } else { &self.pipeline });
+                                on_hardware = wants_hardware;
+                            }
+                        }
                         render_pass.set_bind_group(1, bind_group, &[]);
                         render_pass.set_index_buffer(
                             self.index_buffer.buffer.slice(
@@ -1082,6 +1100,16 @@ impl Renderer {
 
         user_cmd_bufs
     }
+}
+
+/// Craft Anything: whether egui.wgsl's manual filtering (bilinear, clamped to the edge, no mipmaps)
+/// draws a texture with these options as its sampler would.
+fn manual_filtering_draws(options: epaint::textures::TextureOptions) -> bool {
+    use epaint::textures::{TextureFilter, TextureWrapMode};
+    options.magnification == TextureFilter::Linear
+        && options.minification == TextureFilter::Linear
+        && options.wrap_mode == TextureWrapMode::ClampToEdge
+        && options.mipmap_mode.is_none()
 }
 
 fn create_sampler(

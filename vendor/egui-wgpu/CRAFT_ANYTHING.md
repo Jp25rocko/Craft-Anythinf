@@ -13,8 +13,16 @@ shader filters textures by hand and never reads a sampler.
   `HARDWARE_FILTERING` instead of a uniform, so with manual filtering the compiled shader contains no
   sampler access at all.
 - `src/renderer.rs`: the fragment stage sets `HARDWARE_FILTERING` from `predictable_texture_filtering`.
+  Manual filtering is bilinear and clamps to the edge, so with it on, a second pipeline with hardware
+  filtering draws the textures it can't (`Nearest`, a wrap mode other than clamp, mipmaps, or a sampler
+  of the texture's own): `manual_filtering_draws`. Craft Anything's own textures are all linear and
+  clamped, so on WARP they all take the fast pipeline.
 
-On every other adapter nothing changes: hardware filtering, as upstream.
+On every other adapter nothing changes: hardware filtering, as upstream. Everything else in this
+directory is upstream's code as published, including its `unsafe` (window handles for surfaces, and
+macOS's Metal layer), which the workspace's `unsafe_code = "forbid"` doesn't reach: like
+`vendor/wgpu-hal`, this is a dependency kept as published, not the project's own code. Upstream
+issues in the unchanged code are left to upstream.
 
 ## Why
 
@@ -36,5 +44,13 @@ by at most 1 level in 34 pixels.
 ## Removing it
 
 Delete this directory and its `[patch.crates-io]` entry once egui-wgpu leaves the sampler out of the
-pipeline when it filters by hand, or wgpu's DX12 backend samples quickly on WARP. Measure frame times on
-WARP (`WGPU_BACKEND=dx12 CRAFT_ANYTHING_RENDERER=software`) before and after.
+pipeline when it filters by hand, or wgpu's DX12 backend samples quickly on WARP.
+
+Measure before and after with the same work: a release build of `main` and of the candidate, each drawing
+with WARP (on a machine with a graphics card: `WGPU_BACKEND=dx12 CRAFT_ANYTHING_RENDERER=software`, and
+`desktop.log` says `drawing with … device_type: Cpu, … backend: Dx12`), the window maximized on the same
+screen, nothing else running. Start it, wait 10 s, then (1) read the process's cycles
+(`QueryProcessCycleTime`) just before one click on an empty spot and once it stops rising, and (2) move
+the mouse over the window continuously for 8 s and read cycles over that time. On the VM above, with the
+0.6.0 release against this patch on `main` at `88d1d9c`: (1) 20 G cycles against 1.8 G, (2) the table's
+second row.
