@@ -49,6 +49,35 @@ fn nested_functions_with_the_same_name_are_not_exported() {
     }
 }
 
+/// Module-level functions that are not the binding but share its name (an object method, a
+/// named callback) are not exported either, wherever the list is.
+#[test]
+fn unbound_functions_with_the_same_name_are_not_exported() {
+    for src in [
+        "export { setup };\nfunction setup() {}\ndefineComponent({ setup() { return {}; } });\n",
+        "defineComponent({ setup() { return {}; } });\nfunction setup() {}\nexport { setup };\n",
+        "const handler = () => 1;\napp.use(function handler() {});\nexport { handler };\n",
+    ] {
+        let a = parsed(src);
+        let marked = a.facts.functions.iter().filter(|f| f.exported).count();
+        assert_eq!(marked, 1, "{src}: {:?}", functions(&a));
+    }
+}
+
+/// A function assigned to the listed variable is exported, also when the assignment is inside
+/// another function.
+#[test]
+fn functions_assigned_to_the_binding() {
+    for src in [
+        "let handler;\nfunction init() { handler = () => 1; }\ninit();\nexport { handler };\n",
+        "export { handler };\nlet handler;\n(function () { handler = function () {}; })();\n",
+    ] {
+        let a = parsed(src);
+        let marked: Vec<_> = a.facts.functions.iter().filter(|f| f.exported).map(|f| f.name.as_str()).collect();
+        assert_eq!(marked, ["handler"], "{src}: {:?}", functions(&a));
+    }
+}
+
 /// Lists after the declaration, and functions given to a name later, read as before.
 #[test]
 fn lists_after_the_declaration_still_work() {
