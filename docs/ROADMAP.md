@@ -1040,6 +1040,10 @@ Owner: open · Status: in progress
       A local run writes the message (preamble first) to a private file in the temp folder,
       passes `--message-file`, and removes the file when the run is over; a file that can't be
       written falls back to `--message` (`reads_message_file`, `ArgsCx::message_file`)
+- [ ] Aider: a `--message` saved in the backend's extra arguments replaced the request once it
+      went in `--message-file`, since Aider runs `--message` first (review of #1883): leave
+      `--message`, `--msg` and `-m` out of the saved arguments when the message is in a file
+      — claimed: justinjohn0306, branch bugfix/r2.2-aider-saved-message
       — claimed: justinjohn0306, branch feature/r2.2-aider-message-file
 - [x] Aider: read project-folder `.aider.conf.yml` and `.env` in `check_setup`, which needs the working directory passed into `check_native_options`.
       It reads the run's folder, the top of its git repository, then the home folder, as Aider
