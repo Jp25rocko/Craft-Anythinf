@@ -1677,6 +1677,10 @@ Gaps found while using the app for real projects.
       (`program` in stacks.toml) stops before any turn when it isn't found, saying how to get
       it or to start again with another stack
       — claimed: justinjohn0306, branch bugfix/r2.9-check-cargo-before-build
+- [ ] The check for a stack's program was skipped for every SSH builder, but an API builder
+      over SSH (a tunnelled model) builds on this computer (review of #1846): skip it only
+      when the builder's tools run on the other computer (`tools_run_remotely`)
+      — claimed: justinjohn0306, branch bugfix/r2.9-cargo-check-api-over-ssh
 - [ ] A project moved to another stack mid-build keeps its recorded stack (only package.json
       updates it), and the build check runs `cargo build` whenever app/Cargo.toml is there, so
       a Rust project rewritten in Python is still checked with Cargo until the old manifest is
