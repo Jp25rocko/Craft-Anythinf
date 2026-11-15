@@ -69,14 +69,17 @@ const MODEL_SHORTCUTS: &[&str] = &[
 pub struct Aider;
 
 /// Saved extra arguments without a message in them: `--message`, `--msg` and `-m` as Aider's
-/// parser declares them, followed by the message or joined to it (`--msg=…`, `-m…`).
+/// parser declares them, followed by the message or joined to it (`--msg=…`, `-m…`). argparse
+/// also takes `--ms` for `--msg`; every shorter `--mes…` is shared with `--message-file`, so
+/// Aider refuses it (checked against 0.86.2's options).
 fn without_message(args: &[String]) -> Vec<String> {
     let mut kept = Vec::new();
     let mut it = args.iter();
     while let Some(arg) = it.next() {
-        if matches!(arg.as_str(), "--message" | "--msg" | "-m") {
+        if matches!(arg.as_str(), "--message" | "--msg" | "--ms" | "-m") {
             it.next();
-        } else if !(arg.starts_with("--message=") || arg.starts_with("--msg=") || (arg.starts_with("-m") && !arg.starts_with("--"))) {
+        } else if !(arg.starts_with("--message=") || arg.starts_with("--msg=") || arg.starts_with("--ms=") || (arg.starts_with("-m") && !arg.starts_with("--")))
+        {
             kept.push(arg.clone());
         }
     }
@@ -350,6 +353,8 @@ mod tests {
         for kept in [
             &["--architect", "--message", "old task"][..],
             &["--msg=old task", "--architect"],
+            &["--ms", "old task", "--architect"],
+            &["--ms=old task", "--architect"],
             &["-m", "old task", "--architect"],
             &["-mold task", "--architect"],
         ] {
