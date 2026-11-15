@@ -135,7 +135,7 @@ pub fn toggle(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
 
 /// Every dropdown field: egui's combo box with our arrow, and a list whose rows are
 /// [`menu_item`]s sitting close together.
-pub fn dropdown(id_salt: impl egui::AsIdSalt) -> egui::ComboBox {
+pub fn dropdown<'a>(id_salt: impl egui::AsIdSalt) -> egui::ComboBox<'a> {
     egui::ComboBox::from_id_salt(id_salt).icon(combo_icon).popup_style(egui::style::StyleModifier::from(|s: &mut egui::Style| {
         s.spacing.item_spacing.y = theme::space::XXS;
     }))
@@ -148,7 +148,7 @@ const POPUP_FADE: f64 = 0.12;
 /// wasn't drawn on the frame before (by frame, not by the clock: frames can be far apart).
 fn popup_fade(ui: &Ui) -> f32 {
     let (now, frame) = (ui.input(|i| i.time), ui.ctx().cumulative_frame_nr());
-    let id = ui.id().with("popup-fade");
+    let id = ui.scope_id().with("popup-fade");
     let (since, seen) = ui.data(|d| d.get_temp::<(f64, u64)>(id)).unwrap_or((now, frame));
     let since = if frame.saturating_sub(seen) > 1 { now } else { since };
     ui.data_mut(|d| d.insert_temp(id, (since, frame)));
@@ -180,13 +180,16 @@ pub fn menu_item(ui: &mut Ui, selected: bool, text: impl Into<String>) -> Respon
     let fill = if resp.is_pointer_button_down_on() { t.pressed } else { theme::mix(Color32::TRANSPARENT, t.hover, h) };
     ui.painter().rect_filled(rect, t.radius_sm, fill);
     let ink = if selected { t.text } else { theme::mix(t.text_dim, t.text, h) };
-    ui.painter().galley_with_override_text_color(egui::pos2(rect.left() + theme::space::SM, rect.center().y - galley.size().y / 2.0), galley, ink);
+    // Laid out left to right, then mirrored: right to left, the words start at the right and the
+    // tick sits at the left.
+    let words = egui::Rect::from_min_size(egui::pos2(rect.left() + theme::space::SM, rect.center().y - galley.size().y / 2.0), galley.size());
+    ui.painter().galley_with_override_text_color(mirror(rect, words).min, galley, ink);
     if selected {
         let at = egui::Rect::from_center_size(egui::pos2(rect.right() - theme::space::SM - size.icon() / 2.0, rect.center().y), Vec2::splat(size.icon()));
-        icons::paint(ui, at, "check", size.icon(), t.accent_ink);
+        icons::paint(ui, mirror(rect, at), "check", size.icon(), t.accent_ink);
     }
     focus_ring(ui, &resp, rect);
-    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, &text));
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, &text));
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -203,11 +206,13 @@ pub fn action_row(ui: &mut Ui, icon: &str, label: &str, danger: bool) -> Respons
     let fill = if resp.is_pointer_button_down_on() { t.pressed } else { theme::mix(Color32::TRANSPARENT, t.hover, h) };
     ui.painter().rect_filled(rect, t.radius_sm, fill);
     let ink = if danger { t.danger } else { theme::mix(t.text_dim, t.text, h) };
+    // Laid out left to right, then mirrored: right to left, the icon is at the right.
     let at = egui::Rect::from_min_size(egui::pos2(rect.left() + theme::space::SM, rect.center().y - size.icon() / 2.0), Vec2::splat(size.icon()));
-    icons::paint(ui, at, icon, size.icon(), if danger { t.danger } else { theme::mix(t.icon, t.text, h) });
-    ui.painter().galley_with_override_text_color(egui::pos2(at.right() + theme::space::SM, rect.center().y - galley.size().y / 2.0), galley, ink);
+    let words = egui::Rect::from_min_size(egui::pos2(at.right() + theme::space::SM, rect.center().y - galley.size().y / 2.0), galley.size());
+    icons::paint(ui, mirror(rect, at), icon, size.icon(), if danger { t.danger } else { theme::mix(t.icon, t.text, h) });
+    ui.painter().galley_with_override_text_color(mirror(rect, words).min, galley, ink);
     focus_ring(ui, &resp, rect);
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tr(label)));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tr(label)));
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -321,7 +326,7 @@ pub fn frameless_field(resp: &Response) {
 /// [`focus_ring`], faded in and out. Drawn once a frame, after the screens, because a field's
 /// own frame can't know it has focus.
 pub fn text_focus_ring(ctx: &egui::Context) {
-    let key = egui::Id::new("text-focus-ring");
+    let key = egui::Id::unique("text-focus-ring");
     let focused =
         ctx.memory(|m| m.focused()).filter(|id| ctx.text_edit_focused() && !ctx.data(|d| d.get_temp::<bool>(id.with("frameless-field")).unwrap_or(false)));
     // The field that had it last fades out.
@@ -432,14 +437,18 @@ impl egui::Widget for Button<'_> {
             ButtonKind::Danger => (theme::mix(t.danger, t.canvas, if down { 0.2 } else { 0.1 * h }), clear, t.canvas, t.canvas),
         };
         ui.painter().rect(rect, t.radius, fill, Stroke::new(1.0, edge), egui::StrokeKind::Inside);
+        // Laid out left to right, then mirrored: right to left, the icon comes before the label
+        // at its right.
         let mut x = (rect.center().x - (icon_w + galley.size().x) / 2.0).round();
         if let Some(i) = icon {
-            icons::paint(ui, egui::Rect::from_min_size(egui::pos2(x, rect.center().y - size.icon() / 2.0), Vec2::splat(size.icon())), i, size.icon(), tint);
+            let at = egui::Rect::from_min_size(egui::pos2(x, rect.center().y - size.icon() / 2.0), Vec2::splat(size.icon()));
+            icons::paint(ui, mirror(rect, at), i, size.icon(), tint);
             x += icon_w;
         }
-        ui.painter().galley_with_override_text_color(egui::pos2(x, rect.center().y - galley.size().y / 2.0), galley, fg);
+        let words = egui::Rect::from_min_size(egui::pos2(x, rect.center().y - galley.size().y / 2.0), galley.size());
+        ui.painter().galley_with_override_text_color(mirror(rect, words).min, galley, fg);
         focus_ring(ui, &resp, rect);
-        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, tr(label)));
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, tr(label)));
         if enabled { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp }
     }
 }

@@ -1731,7 +1731,7 @@ fn an_openai_compatible_ais_effort_is_set_in_settings() {
     h.state_mut().state.settings_open = true;
     h.state_mut().state.settings_tab = craft_anything_ui_egui::state::SettingsTab::Ai;
     h.run_steps(2);
-    h.get_by_label("Effort:");
+    h.get_by_role_and_label(egui::Role::Label, "Effort:");
     h.get_by_value("default").click();
     h.run();
     assert!(h.query_by_label("max").is_none(), "only OpenAI's levels");

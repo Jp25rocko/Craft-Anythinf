@@ -188,7 +188,8 @@ fn main() {
             },
             |harness| {
                 use egui_kittest::kittest::Queryable as _;
-                harness.get_by_value("English").click();
+                // By its name, not its value: the value is the language the scene is drawn in.
+                harness.get_by_role_and_label(egui::Role::ComboBox, &craft_anything_ui_egui::i18n::tr("Language")).click();
                 harness.step();
                 // The list fades in on the clock.
                 std::thread::sleep(std::time::Duration::from_millis(200));
@@ -213,7 +214,8 @@ fn main() {
             },
             |harness| {
                 use egui_kittest::kittest::Queryable as _;
-                harness.get_by_label("Help").click();
+                // In the language the scene is drawn in.
+                harness.get_by_label(&craft_anything_ui_egui::i18n::tr("Help")).click();
                 harness.step();
                 std::thread::sleep(std::time::Duration::from_millis(200));
                 for _ in 0..12 {

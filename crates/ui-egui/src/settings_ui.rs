@@ -403,7 +403,7 @@ fn ai(app: &mut CraftApp, ui: &mut Ui) {
             // hover), and at its end whether it's the one in use and the way to remove it.
             ui.horizontal(|ui| {
                 icons::show(ui, "bot", theme::icon::LG, if b.enabled { t.accent } else { t.text_faint });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.with_layout(widgets::to_end(egui::Align::Center), |ui| {
                     if confirming.as_ref() != Some(&b.name)
                         && icons::button(ui, "trash-2", theme::ControlSize::Small, false, &trf("Remove {name}", &[("name", &b.name)])).clicked()
                     {
@@ -412,7 +412,10 @@ fn ai(app: &mut CraftApp, ui: &mut Ui) {
                     if app.state.backend.as_ref() == Some(&b.name) {
                         widgets::pill(ui, "In use", t.on_accent, t.accent);
                     }
-                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    // The name from where reading starts, in the room the end leaves.
+                    let along =
+                        if widgets::rtl() { egui::Layout::right_to_left(egui::Align::Center) } else { egui::Layout::left_to_right(egui::Align::Center) };
+                    ui.with_layout(along, |ui| {
                         ui.add(egui::Label::new(RichText::new(&b.name).font(theme::semibold(theme::BODY))).truncate());
                     });
                 });

@@ -1366,6 +1366,7 @@ your files there are the app, edited in place	ملفاتك هناك هي الت�
 {name} builds what you make; answers come from {brain}.	يبني {name} ما تصنعه؛ وتأتي الإجابات من {brain}.
 {name} can't be attached: a message takes pictures up to 20 MB.	تعذّر إرفاق {name}: تقبل الرسالة صورًا حتى 20 MB.
 {name} can't be attached: it isn't a PNG, JPEG, GIF or WebP picture.	تعذّر إرفاق {name}: ليس صورة PNG أو JPEG أو GIF أو WebP.
+{name} can't be kept to only reading, so it isn't asked questions. Ask with Claude Code, or with an AI that has an API key.	لا يمكن حصر {name} في القراءة فقط، لذا لا تُطرح عليه الأسئلة. اسأل عبر Claude Code، أو عبر ذكاء اصطناعي بمفتاح API.
 {name} is ready	{name} جاهز
 {name} is ready.	{name} جاهز.
 {name} isn't available yet in this build.	{name} غير متوفر بعد في هذا الإصدار.
@@ -1488,3 +1489,6 @@ Updated to {version}.	تم التحديث إلى {version}.
 Use Releases or your package manager to update this installation.	استخدم الإصدارات أو مدير الحزم لتحديث هذه النسخة المثبّتة.
 You're up to date.	لديك أحدث إصدار.
 {version} is available.	يتوفر الإصدار {version}.
+Forget a website sign-in	نسيان تسجيل الدخول إلى موقع ويب
+Sign in to a website	تسجيل الدخول إلى موقع ويب
+Some shared files could not be hard-linked and were copied instead ({size}).	تعذّر إنشاء ارتباطات ثابتة لبعض الملفات المشتركة، فنُسخت بدلًا من ذلك ({size}).
