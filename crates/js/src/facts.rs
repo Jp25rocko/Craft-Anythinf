@@ -175,7 +175,7 @@ pub(crate) struct FactVisitor<'s> {
     /// What `export { … }` lists name, resolved to bindings; matched to functions after the walk,
     /// since the list may come before the declarations.
     export_locals: HashSet<Key>,
-    /// The same names as written, for functions not bound to a name.
+    /// Listed names that resolve to no binding, as written.
     export_names: HashSet<String>,
     pending_window: Option<String>,
     object_prefix: Vec<String>,
@@ -262,8 +262,9 @@ impl<'s> FactVisitor<'s> {
     }
 
     /// Mark the functions `export { … }` lists name. A function bound to a name is exported when
-    /// its binding is listed (`export { f }; function f() {}` included); a module-level one that
-    /// isn't (`let f; f = function () {}`), when its name is.
+    /// its binding is listed (`export { f }; function f() {}` included), whether it was declared,
+    /// initialized a variable or was assigned to one. A listed name that resolves to no binding is
+    /// matched by name against module-level functions bound to nothing.
     fn mark_listed_exports(&mut self) {
         let mut bound = vec![false; self.facts.functions.len()];
         for (i, k) in &self.fn_bindings {
@@ -1258,13 +1259,15 @@ impl<'a> Visit<'a> for FactVisitor<'_> {
         for s in &it.specifiers {
             push_unique(&mut self.facts.exports.esm, s.exported.name().to_string(), MAX_LIST);
             let local = s.local.name().to_string();
-            if self.export_names.len() < MAX_LIST {
-                if let ModuleExportName::IdentifierReference(r) = &s.local
-                    && let Some(k) = self.key_ref(r)
-                {
-                    self.export_locals.insert(k);
-                }
-                self.export_names.insert(local.clone());
+            if self.export_locals.len() + self.export_names.len() < MAX_LIST {
+                let key = match &s.local {
+                    ModuleExportName::IdentifierReference(r) => self.key_ref(r),
+                    _ => None,
+                };
+                match key {
+                    Some(k) => self.export_locals.insert(k),
+                    None => self.export_names.insert(local.clone()),
+                };
             }
             if self.exported.len() < MAX_LIST {
                 self.exported.insert(Key::Name(local));
@@ -1424,6 +1427,12 @@ impl<'a> Visit<'a> for FactVisitor<'_> {
             }
             if is_function_like(right) {
                 self.name_next(right, t.clone());
+                // `f = () => …` binds the function to `f` wherever it happens (`init() { f = … }`).
+                if let AssignmentTarget::AssignmentTargetIdentifier(id) = &it.left
+                    && let Some(k) = self.key_ref(id)
+                {
+                    self.pending_binding.insert(right.span().start, k);
+                }
             } else if let Expression::NewExpression(_) = right {
                 self.pending_window = Some(t.clone());
             }
