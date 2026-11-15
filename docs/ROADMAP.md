@@ -2363,7 +2363,7 @@ Owner: open · Status: in progress
       — claimed: AlexJoaquimPereira, branch bugfix/r3.12-js-nesting-overflow-shapes
 - [x] Read a one-module webpack chunk only when its module is a factory function and the file names webpack or pushes onto `(g = g || [])`, so an ordinary `queue.push([[1], { callback: () => 42 }])` is not a webpack chunk.
       — claimed: Plastic-time, branch bugfix/r3.12-js-single-module-chunk
-- [ ] Read only a URL's path for GraphQL and tRPC endpoints: the host ends at `/`, `?` or `#`, so `https://example.test?next=/graphql` is not a GraphQL endpoint.
+- [x] Read only a URL's path for GraphQL and tRPC endpoints: the host ends at `/`, `?` or `#`, so `https://example.test?next=/graphql` is not a GraphQL endpoint.
       — claimed: Plastic-time, branch bugfix/r3.12-js-url-query-api
 - [x] Read and edit JSONC registrations whose line comments end at a bare carriage return.
       — claimed: Afloat16, branch bugfix/r3.12-jsonc-carriage-return-comments
