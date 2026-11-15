@@ -1680,6 +1680,25 @@ fn a_model_list_with_a_text_api_keeps_chat_models() {
     assert_eq!(list, vec!["openai/gpt-4o-mini", "gpt-5.4"]);
 }
 
+/// An entry that says nothing about its API (no "api", or null) is listed; an unknown API text or
+/// shape is not. Whitespace-only ids are dropped, and an id repeated with padding is listed once.
+#[test]
+fn a_model_list_handles_missing_api_and_padded_ids() {
+    let models = json!({"data":[
+        {"id":"openai/gpt-4o-mini"},
+        {"id":"anthropic/claude-sonnet-4-5","api":null},
+        {"id":"made/up","api":"responses"},
+        {"id":"odd/shape","api":42},
+        {"id":"   ","api":"chat"},
+        {"id":null,"api":"chat"},
+        {"id":" openai/gpt-4o-mini ","api":"chat"},
+    ]})
+    .to_string();
+    let (url, _) = mock(vec![(200, "application/json", models)]);
+    let list = openai::OpenAi::compatible("Router", &url, None, "").list_models(Duration::from_secs(5)).unwrap();
+    assert_eq!(list, vec!["openai/gpt-4o-mini", "anthropic/claude-sonnet-4-5"]);
+}
+
 /// #369: when OpenRouter has no provider that supports tools for a model (404 once only those are
 /// asked for), the turn goes on with the text protocol instead of failing; the first request
 /// required parameters, the second sends no tools.
