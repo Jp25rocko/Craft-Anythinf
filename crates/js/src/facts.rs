@@ -167,6 +167,16 @@ pub(crate) struct FactVisitor<'s> {
     frames: Vec<Frame>,
     /// Names for upcoming functions, keyed by the function's span start.
     pending: HashMap<u32, String>,
+    /// The variable an upcoming function expression initializes, keyed by its span start.
+    pending_binding: HashMap<u32, Key>,
+    /// Functions bound to a name (`function f`, `const f = () => …`): index in `facts.functions`
+    /// and the binding.
+    fn_bindings: Vec<(usize, Key)>,
+    /// What `export { … }` lists name, resolved to bindings; matched to functions after the walk,
+    /// since the list may come before the declarations.
+    export_locals: HashSet<Key>,
+    /// The same names as written, for functions not bound to a name.
+    export_names: HashSet<String>,
     pending_window: Option<String>,
     object_prefix: Vec<String>,
     class_names: Vec<String>,
@@ -204,6 +214,10 @@ impl<'s> FactVisitor<'s> {
             object_members: HashMap::new(),
             frames: Vec::new(),
             pending: HashMap::new(),
+            pending_binding: HashMap::new(),
+            fn_bindings: Vec::new(),
+            export_locals: HashSet::new(),
+            export_names: HashSet::new(),
             pending_window: None,
             object_prefix: Vec::new(),
             class_names: Vec::new(),
@@ -221,6 +235,7 @@ impl<'s> FactVisitor<'s> {
     /// could change them, so the window goes back to `dynamic`. Call after the walk.
     pub fn finish(&mut self) {
         self.api_finish();
+        self.mark_listed_exports();
         let mut spoiled: HashSet<&Key> = HashSet::new();
         // Past the cap an export may have gone unrecorded.
         let all_exported = self.exported.len() >= MAX_LIST;
@@ -242,6 +257,31 @@ impl<'s> FactVisitor<'s> {
                 w.web_preferences = WindowOptions::dynamic().prefs;
                 w.preload = None;
                 w.options_from = None;
+            }
+        }
+    }
+
+    /// Mark the functions `export { … }` lists name. A function bound to a name is exported when
+    /// its binding is listed (`export { f }; function f() {}` included); a module-level one that
+    /// isn't (`let f; f = function () {}`), when its name is.
+    fn mark_listed_exports(&mut self) {
+        let mut bound = vec![false; self.facts.functions.len()];
+        for (i, k) in &self.fn_bindings {
+            if let Some(b) = bound.get_mut(*i) {
+                *b = true;
+            }
+            if self.export_locals.contains(k)
+                && let Some(f) = self.facts.functions.get_mut(*i)
+            {
+                f.exported = true;
+            }
+        }
+        if self.export_names.is_empty() {
+            return;
+        }
+        for (f, bound) in self.facts.functions.iter_mut().zip(bound) {
+            if !bound && f.parent.is_none() && self.export_names.contains(&f.name) {
+                f.exported = true;
             }
         }
     }
@@ -1218,8 +1258,13 @@ impl<'a> Visit<'a> for FactVisitor<'_> {
         for s in &it.specifiers {
             push_unique(&mut self.facts.exports.esm, s.exported.name().to_string(), MAX_LIST);
             let local = s.local.name().to_string();
-            for f in self.facts.functions.iter_mut().filter(|f| f.name == local) {
-                f.exported = true;
+            if self.export_names.len() < MAX_LIST {
+                if let ModuleExportName::IdentifierReference(r) = &s.local
+                    && let Some(k) = self.key_ref(r)
+                {
+                    self.export_locals.insert(k);
+                }
+                self.export_names.insert(local.clone());
             }
             if self.exported.len() < MAX_LIST {
                 self.exported.insert(Key::Name(local));
@@ -1295,6 +1340,10 @@ impl<'a> Visit<'a> for FactVisitor<'_> {
                 }
                 if is_function_like(inner) {
                     self.name_next(inner, n.clone());
+                    if let BindingPattern::BindingIdentifier(b) = &it.id {
+                        let k = self.key_bind(b);
+                        self.pending_binding.insert(inner.span().start, k);
+                    }
                 } else if let Expression::NewExpression(_) = inner {
                     self.pending_window = Some(n.clone());
                 } else if let Expression::ObjectExpression(o) = inner {
@@ -1441,7 +1490,14 @@ impl<'a> Visit<'a> for FactVisitor<'_> {
             (id, _) => self.fn_name(id.as_ref().map(|i| i.name.as_str()), it.span),
         };
         let kind = if matches!(it.r#type, FunctionType::FunctionDeclaration) { "declaration" } else { "expression" };
+        let binding = match (&it.id, declared) {
+            (Some(id), true) => Some(self.key_bind(id)),
+            _ => self.pending_binding.remove(&it.span.start),
+        };
         let pushed = self.add_function(name, kind, it.span, &it.params);
+        if pushed && let Some(k) = binding {
+            self.fn_bindings.push((self.facts.functions.len() - 1, k));
+        }
         self.pending_window = None;
         walk::walk_function(self, it, flags);
         if pushed {
@@ -1451,7 +1507,11 @@ impl<'a> Visit<'a> for FactVisitor<'_> {
 
     fn visit_arrow_function_expression(&mut self, it: &ArrowFunctionExpression<'a>) {
         let name = self.fn_name(None, it.span);
+        let binding = self.pending_binding.remove(&it.span.start);
         let pushed = self.add_function(name, "arrow", it.span, &it.params);
+        if pushed && let Some(k) = binding {
+            self.fn_bindings.push((self.facts.functions.len() - 1, k));
+        }
         self.pending_window = None;
         walk::walk_arrow_function_expression(self, it);
         if pushed {
