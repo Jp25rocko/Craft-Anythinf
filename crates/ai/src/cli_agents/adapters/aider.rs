@@ -68,6 +68,21 @@ const MODEL_SHORTCUTS: &[&str] = &[
 
 pub struct Aider;
 
+/// Saved extra arguments without a message in them: `--message`, `--msg` and `-m` as Aider's
+/// parser declares them, followed by the message or joined to it (`--msg=…`, `-m…`).
+fn without_message(args: &[String]) -> Vec<String> {
+    let mut kept = Vec::new();
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if matches!(arg.as_str(), "--message" | "--msg" | "-m") {
+            it.next();
+        } else if !(arg.starts_with("--message=") || arg.starts_with("--msg=") || (arg.starts_with("-m") && !arg.starts_with("--"))) {
+            kept.push(arg.clone());
+        }
+    }
+    kept
+}
+
 impl AgentAdapter for Aider {
     fn ids(&self) -> &'static [&'static str] {
         &["aider"]
@@ -82,7 +97,12 @@ impl AgentAdapter for Aider {
         if !cx.builder {
             a.push("--dry-run".into());
         }
-        a.extend(cx.options.args.iter().cloned());
+        match cx.message_file {
+            // Aider runs `--message` before it reads `--message-file`, so a saved one would
+            // replace the request.
+            Some(_) => a.extend(without_message(&cx.options.args)),
+            None => a.extend(cx.options.args.iter().cloned()),
+        }
         // Last, so a saved extra argument can't be mistaken for the message.
         match cx.message_file {
             Some(file) => a.extend(["--message-file".into(), file.display().to_string()]),
@@ -321,6 +341,26 @@ mod tests {
             question: false,
             message_file,
         })
+    }
+
+    #[test]
+    fn a_saved_message_cannot_replace_the_request_in_its_file() {
+        let saved = |args: &[&str]| BackendOptions { args: args.iter().map(|a| a.to_string()).collect(), ..Default::default() };
+        let file = Path::new("message.txt");
+        for kept in [
+            &["--architect", "--message", "old task"][..],
+            &["--msg=old task", "--architect"],
+            &["-m", "old task", "--architect"],
+            &["-mold task", "--architect"],
+        ] {
+            let a = args_with(true, &saved(kept), Some(file));
+            assert!(!a.iter().any(|x| x.contains("old task") || x == "--message" || x == "-m"), "{kept:?}: {a:?}");
+            assert!(a.contains(&"--architect".to_string()), "other saved arguments stay: {a:?}");
+            assert_eq!(&a[a.len() - 2..], ["--message-file".to_string(), file.display().to_string()]);
+        }
+        // With the message in argv it comes last, so it already wins over a saved one.
+        let a = args(true, &saved(&["--message", "old task"]));
+        assert_eq!(&a[a.len() - 2..], ["--message", "PRE make a game"]);
     }
 
     #[test]

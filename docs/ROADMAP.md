@@ -1040,7 +1040,7 @@ Owner: open · Status: in progress
       A local run writes the message (preamble first) to a private file in the temp folder,
       passes `--message-file`, and removes the file when the run is over; a file that can't be
       written falls back to `--message` (`reads_message_file`, `ArgsCx::message_file`)
-- [ ] Aider: a `--message` saved in the backend's extra arguments replaced the request once it
+- [x] Aider: a `--message` saved in the backend's extra arguments replaced the request once it
       went in `--message-file`, since Aider runs `--message` first (review of #1883): leave
       `--message`, `--msg` and `-m` out of the saved arguments when the message is in a file
       — claimed: justinjohn0306, branch bugfix/r2.2-aider-saved-message
