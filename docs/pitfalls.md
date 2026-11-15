@@ -126,6 +126,12 @@ with `AiHub::new`, which saves to the real `config.toml` and the system keychain
 added or removed an AI yet, so nothing noticed. Everything a test app can save goes to a temp
 folder (`AiHub::with_stores`), not only the engine's session.
 
+**A test that finds a program by Cargo's folder layout.** The CLI was looked for one folder up
+from the test binary (`target/debug/deps`). CI follows stable Rust, and Rust 1.100's Cargo moved
+test binaries to `target/debug/build/<package>/<hash>/out`, so `main` failed overnight with no
+code change. When CI breaks on a commit that passed, compare the runs' toolchain lines first, and
+don't rely on where Cargo keeps its intermediate files.
+
 **A test that passes only where a program is installed.** A tool's `Requires::Engine` is checked
 before it runs, so a test of its input checks passed on a machine with ilspycmd and failed on one
 without. Point the test session's `engines.tools` path at a stand-in file when the tool refuses
@@ -558,6 +564,10 @@ beside an external one, a nested index map, and the sources-only read used for b
 `formats::sourcemap`, but `js::find_map_url` kept requiring a literal space, so a bundle with the
 standard no-space annotation was analysed without its map. Have one implementation and call it
 from both places; a regression at the consumer's public entry point catches a copy that drifts.
+The same happened with the PE optional header: `pe::headers` was bounded by `SizeOfOptionalHeader`,
+but `dotnet::pe::parse_pe` still read data directory 14 at a fixed offset, so a short declared
+header could borrow the CLI directory from section-table bytes. When a structure's declared size
+is enforced, search every reader of its fixed offsets and test each one with a short declared size.
 
 **A floating-point conversion changed a fingerprint.** Widening a single-precision NaN to a double
 can change its sign, payload or signaling bit. Keep the original encoded bits for identities, and
@@ -617,6 +627,18 @@ only the first 30 distinct limitations in Markdown and HTML with no marker for t
 reader could mistake a capped list for everything the evidence said. Keep the display cap for
 readability but name how many were omitted in both formats; test one more limitation than the cap.
 
+**A comparison forgot what each side couldn't see.** `app_graphs_compare` and `js_exports_compare`
+loaded application graphs but built their evidence with only their own limitations, so a malformed
+source map or a truncated inventory disappeared and the comparison read as complete. Carry each
+loaded side's limitations into the comparison evidence, labelled left/right, and test both path and
+saved-evidence inputs.
+**A reference list was cut and looked complete.** `native_strings_find` kept 32 references per
+string and gave no count or flag, while the tool promised a complete search and the browse tool
+already reported a full count. Keep the row cap for size but return `reference_count` (complete
+within the analysis unless its xref limit was reached), a per-row `references_capped` flag, a
+display-cap limitation and the analysis `xref_limit` limitation; test an engine-boundary program
+whose string exceeds the display cap while the analysis limit is reached, including paging.
+
 **A comparison list was taken for the whole set.** The application comparison cut added, removed,
 bundle-module and vendor rows at 2,000, and its summary counted those cut lists as totals; the
 export comparison cut each module's added/removed diff the same way. Keep a complete total beside
@@ -629,6 +651,22 @@ but the lexer fallback, used for huge, deeply nested or unparsable sources, push
 a limit, so the path chosen for hostile input was the one that could grow. Apply the same cap to
 every push on every path, record the list in `truncated` where the parsed path does, and test the
 fallback with more calls than the cap permits.
+
+**A nesting guard missed the shapes it exists for.** The JavaScript nesting estimate counted
+brackets and some keywords, but an `else if` chain lost its depth at every `;`, `extends` and a run
+of prefix `++` counted nothing, and the tokenizer read `/` after `++`, after a member name or after
+`yield` as a regex, hiding the brackets in the text after it. The `;` that ended each link lost the
+chain depth when a comma expression came before it, a `;` inside a block consequent reset the chain
+the block belonged to, and a regex after `yield` needs its brackets and prefix-operator runs counted
+too, since the same text is division in sloppy code. Sources that estimated one or two levels then
+overflowed the parser thread's stack and aborted the process. Count the `else` links at their own
+scope, read a `yield /…/` as both a regex (for the fallback's facts) and possible code (for the
+guard) with lookahead bounded across the source, ended by every line terminator (an escaped one
+included), failing closed when its budget runs out, when a quote or backtick inside it starts a
+string in sloppy code, when its closing slash would open a comment or a later token would differ
+between the regex and division readings, and keeping the division reading's operator depth in the
+expression so later nesting adds to it; test that a deep source reaches the lexer fallback with a
+nesting reason instead of being parsed.
 
 **An occurrence label was also a binding name.** The second `obj.x` window and the first
 `obj["x[2]"]` window both appeared as `obj.x[2]`. Reserve literal labels and use a separate
@@ -894,6 +932,18 @@ computer. Say what ran and what it printed, write the rest to a log the person c
 agent run does: `crate::failure_log`), and never name a next step you don't spell out. Exit 255
 from ssh is ssh's own failure: don't blame the remote program. Test a message by causing the failure.
 
+**A rule in the brief taken for a guard.** Every brief says everything outside `app/` is read-only,
+and an OpenCode builder still wrote its own progress notes over `inbox/build-progress.json`. The
+run read the record strictly, as it should, and every Try again stopped at "unknown field `step`"
+with no way forward. A coding agent's own tools don't pass through our checks: a file the run
+depends on is read as if anything may have changed it, and the error for one that changed says
+what the file is and how to go on.
+The fence in OpenCode's own rules was first drafted as "deny every edit, allow `app/*`", from the
+brief's words; a project edited in place (`app_in_root`) has its app in the project folder itself,
+and every edit its builder made would have been refused. A rule drawn from one layout's words
+misses the other: build it from the typed list the code already keeps (`OWN_NAMES`), and test
+both layouts.
+
 **A retry that took "no message" for "brand new".** A run with no message and no `continuing`
 flag was read as a first build, and Try again starts exactly that run. A browser that died during
 the final check failed a finished build; Try again then studied the original again and gave the
@@ -1146,6 +1196,14 @@ an archive parser, but the installer wrote earlier listed files and returned suc
 partial inventory for inspection, expose the stop as typed data, and make extraction check it before
 writing any member. Missing end markers need their own compatibility control; `complete: false`
 alone does not identify a refused metadata record.
+
+**A roadmap read from the checked-out branch, not from `main`.** `docs/ROADMAP.md` was read while
+an old feature branch was checked out, so a dozen pending lines that `main` had already ticked
+looked open: the SSH builder's environment, the 304 stand-in, prompt pictures, pins' size, the
+OpenCode sweep. Time went into checking each against the code, and a branch was even started for
+work `main` already had. Read the roadmap (and any file you plan to change) from `origin/main`,
+with `git show origin/main:docs/ROADMAP.md` or after checking out the base branch; a pending line
+can also carry "— in PR #245", so check that PR's state, since a closed PR leaves the work open.
 
 **Safe recovery paths erased distinct source identities.** Source-map names such as `src//main.js`
 and `src/main.js` became the same safe path, so exclusive creation kept the first file and dropped
