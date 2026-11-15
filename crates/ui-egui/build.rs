@@ -124,11 +124,6 @@ fn craft_fonts(dir: &Path, wasm: bool, inputs: &mut Vec<PathBuf>) -> Result<Stri
 fn embed_catalogs() {
     // The folder itself, so a new language directory or a stray `*.tsv` is noticed.
     println!("cargo::rerun-if-changed=src/i18n");
-    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").unwrap_or_default()).join("i18n");
-    if let Err(e) = std::fs::create_dir_all(&out_dir) {
-        println!("cargo::error=creating {}: {e}", out_dir.display());
-        return;
-    }
     let built = match language_catalogs(Path::new("src/i18n")) {
         Ok(built) => built,
         Err(e) => {
@@ -136,6 +131,16 @@ fn embed_catalogs() {
             return;
         }
     };
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").unwrap_or_default()).join("i18n");
+    // A language folder that was removed must not leave its previous catalog for include_str!.
+    // A clean build has no output directory yet; that is not an error.
+    if let Err(e) = remove_stale_catalogs(&out_dir, &built.languages) {
+        println!("cargo::error={e}");
+    }
+    if let Err(e) = std::fs::create_dir_all(&out_dir) {
+        println!("cargo::error=creating {}: {e}", out_dir.display());
+        return;
+    }
     for lang in &built.languages {
         for input in &lang.inputs {
             println!("cargo::rerun-if-changed={}", input.display());
@@ -148,6 +153,30 @@ fn embed_catalogs() {
     for error in &built.errors {
         println!("cargo::error={error}");
     }
+}
+
+/// Delete generated `*.tsv` files in `out_dir` for languages that are no longer built.
+/// Other files are left alone. A missing directory is a clean build and is not an error.
+pub fn remove_stale_catalogs(out_dir: &Path, languages: &[LanguageCatalog]) -> Result<(), String> {
+    let entries = match std::fs::read_dir(out_dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("reading {}: {e}", out_dir.display())),
+    };
+    for entry in entries {
+        let path = entry.map_err(|e| format!("reading {}: {e}", out_dir.display()))?.path();
+        if !path.is_file() || path.extension().is_none_or(|ext| ext != "tsv") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if languages.iter().any(|lang| lang.code == stem) {
+            continue;
+        }
+        std::fs::remove_file(&path).map_err(|e| format!("removing stale catalog {}: {e}", path.display()))?;
+    }
+    Ok(())
 }
 
 /// One language folder combined into the catalog text the app embeds.

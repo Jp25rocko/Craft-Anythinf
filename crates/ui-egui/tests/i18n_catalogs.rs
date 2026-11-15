@@ -6,7 +6,7 @@
 #[path = "../build.rs"]
 mod build;
 
-use build::language_catalogs;
+use build::{LanguageCatalog, language_catalogs, remove_stale_catalogs};
 use std::path::Path;
 
 #[test]
@@ -43,6 +43,23 @@ fn catalogs_combine_in_file_name_order_and_a_repeated_key_fails() {
     let built = language_catalogs(dir.path()).unwrap();
     let error = built.errors.iter().find(|e| e.contains("Open")).unwrap_or_else(|| panic!("a repeated line must fail: {:?}", built.errors));
     assert!(error.contains("a.tsv:1") && error.contains("a.tsv:2"), "{error}");
+}
+
+#[test]
+fn a_generated_catalog_for_a_removed_language_is_deleted() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("i18n");
+    std::fs::create_dir(&out).unwrap();
+    std::fs::write(out.join("de.tsv"), "Open\tÖffnen\n").unwrap();
+    std::fs::write(out.join("gone.tsv"), "stale\n").unwrap();
+    std::fs::write(out.join("notes.txt"), "leave me\n").unwrap();
+    let keep = [LanguageCatalog { code: "de".into(), text: String::new(), inputs: Vec::new() }];
+    remove_stale_catalogs(&out, &keep).unwrap();
+    assert!(out.join("de.tsv").is_file());
+    assert!(!out.join("gone.tsv").exists(), "a deleted language must not keep its generated catalog");
+    assert_eq!(std::fs::read_to_string(out.join("notes.txt")).unwrap(), "leave me\n");
+    // A clean build has not created the output directory yet.
+    assert!(remove_stale_catalogs(&dir.path().join("missing"), &keep).is_ok());
 }
 
 #[test]

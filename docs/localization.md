@@ -149,8 +149,9 @@ below). French and Japanese use the same folders; they are not part of the key-s
 ## Adding a language
 
 Create `crates/ui-egui/src/i18n/<code>/core.tsv` with the same keys as the other catalogs, and
-add one row to `LANGUAGES` in `crates/ui-egui/src/i18n.rs`. Preserve placeholders, then run the
-checks below.
+add one row to `LANGUAGES` in `crates/ui-egui/src/i18n.rs`. Add `<code>` to the list in `check`
+in `xtask/src/i18n_coverage.rs`, so `cargo xtask i18n-coverage` checks the new catalog.
+Preserve placeholders, then run the checks below.
 
 ## Validation
 
