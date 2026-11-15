@@ -27,6 +27,30 @@ fn side_effect_imports_are_bounded() {
     let src = "import './x.js';".repeat(5010);
     let a = analyze("app.mjs", &src, &Limits { max_parse_bytes: 0, ..Limits::default() });
     assert_eq!(a.facts.imports.len(), 5000);
+    assert!(a.facts.truncated.iter().any(|t| t == "imports"), "{:?}", a.facts.truncated);
+}
+/// A full list says it was cut whichever import form overflowed it; exactly 5,000 does not.
+#[test]
+fn a_full_import_list_says_it_was_cut() {
+    let lexer = Limits { max_parse_bytes: 0, ..Limits::default() };
+    for (form, n, cut) in
+        [("import './x.js';", 5000, false), ("import x from './x.js';", 5001, true), ("require('./x.js');", 5001, true), ("import('./x.js');", 5001, true)]
+    {
+        let a = analyze("app.mjs", &form.repeat(n), &lexer);
+        assert_eq!(a.facts.imports.len(), 5000, "{form}");
+        assert_eq!(a.facts.truncated.iter().any(|t| t == "imports"), cut, "{form} x{n}: {:?}", a.facts.truncated);
+    }
+}
+/// A `.node` addon is a native module whichever import form loads it, as in the parsed pass.
+#[test]
+fn native_addons_from_every_import_form() {
+    let lexer = Limits { max_parse_bytes: 0, ..Limits::default() };
+    for src in ["import './addon.node';", "import addon from './addon.node';", "require('./addon.node');"] {
+        for limits in [Limits::default(), lexer] {
+            let a = analyze("app.mjs", src, &limits);
+            assert_eq!(a.facts.native_modules, ["./addon.node"], "{src} {:?}", a.facts.mode);
+        }
+    }
 }
 /// Existing named/dynamic imports and require stay distinct from strings and comments.
 #[test]
