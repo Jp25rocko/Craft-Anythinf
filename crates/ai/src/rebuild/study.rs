@@ -350,7 +350,10 @@ impl Worker {
                             emit_event(&feed, &events, &wake, RunEvent::Step { step: Step::Study, text: m.to_string() });
                         }
                     };
-                    craft_anything_engine::tools::deep::prepare(&settings, &bytes, &sha, &said, &|| !record.exists())
+                    craft_anything_engine::tools::deep::prepare(&settings, &bytes, &sha, &said, &|| {
+                        // Only a record known to be gone: a drive that can't be read for a moment isn't a delete.
+                        matches!(record.try_exists(), Ok(false))
+                    })
                 });
                 if let Err(e) = &result {
                     log::warn!("Ghidra's analysis of {} failed: {e}", program.display());
