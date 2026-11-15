@@ -1935,7 +1935,7 @@ Owner: open · Status: in progress
       — claimed: Plastic-time, branch rrfz/bugfix-r3.12-js-module-collisions
 - [x] Bound the text JavaScript facts build from constant strings, so repeated concatenation of a constant with itself cannot grow without limit.
       — claimed: Plastic-time, branch bugfix/r3.12-js-constant-text-budget
-- [ ] Read `.cts` files as CommonJS and `.mts` files as ES modules, as Node and TypeScript do, instead of guessing from the syntax.
+- [x] Read `.cts` files as CommonJS and `.mts` files as ES modules, as Node and TypeScript do, instead of guessing from the syntax.
       — claimed: Plastic-time, branch bugfix/r3.12-js-cts-commonjs
 - [x] Refuse oversized GNU tar long names and link targets instead of silently truncating member identities.
       — claimed: Afloat16, branch bugfix/r3.12-tar-long-identities-20261109
