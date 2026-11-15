@@ -1051,6 +1051,10 @@ Owner: open · Status: in progress
       went in `--message-file`, since Aider runs `--message` first (review of #1883): leave
       `--message`, `--msg` (or `--ms`) and `-m` out of the saved arguments when the message is in a file
       — claimed: justinjohn0306, branch bugfix/r2.2-aider-saved-message
+- [ ] Aider: a saved `-vm "old task"` still replaced the request in its file, since `-v` and `-h`
+      take no value and may come before `m` in one group (review of #1884): drop the `m` and
+      its message from such a group and keep the other flags
+      — claimed: justinjohn0306, branch bugfix/r2.2-aider-grouped-message-flag
 - [x] Aider: read project-folder `.aider.conf.yml` and `.env` in `check_setup`, which needs the working directory passed into `check_native_options`.
       It reads the run's folder, the top of its git repository, then the home folder, as Aider
       does — PR #1210; claimed: rmsff, branch feature/r2.2-aider-project-settings
