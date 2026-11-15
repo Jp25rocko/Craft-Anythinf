@@ -2,7 +2,7 @@
 //! build is good enough, generated art), Plugins (MCP servers), Safety.
 
 use crate::i18n::{LANGUAGES, tr, trf};
-use crate::state::SettingsTab;
+use crate::state::{Modal, SettingsTab};
 use crate::theme::{self, ThemeKind, Tokens};
 use crate::{CraftApp, Pick, icons, widgets};
 use craft_anything_ai::BackendKind;
@@ -138,6 +138,14 @@ fn row(ui: &mut Ui, title: &str, sub: &str, add: impl FnOnce(&mut Ui)) {
 }
 
 fn general(app: &mut CraftApp, ui: &mut Ui) {
+    // Reachable on every system, not only through macOS's menu bar (#1300).
+    row(ui, "Version", "", |ui| {
+        ui.label(RichText::new(env!("CARGO_PKG_VERSION")).font(theme::mono(theme::CODE)));
+        if ui.link(tr("About Craft Anything")).clicked() {
+            app.state.settings_open = false;
+            app.state.modal = Some(Modal::About);
+        }
+    });
     row(ui, "Mode", "Simple: say what you want and it's handled for you. Advanced: every tool, the evidence and the logs.", |ui| {
         let sel = usize::from(app.settings.mode == Mode::Experienced);
         if let Some(i) = widgets::segmented(ui, &["Simple", "Advanced"], sel, theme::ControlSize::Medium) {

@@ -114,6 +114,26 @@ fn simple_title_bar_keeps_only_the_essentials() {
     h.get_by_label("Clean room");
 }
 
+/// #1300: Windows and Linux had no way to see the version or open the About dialog that already
+/// existed; Settings → General now shows the version and opens it.
+#[test]
+fn the_version_and_about_dialog_open_from_settings() {
+    use craft_anything_ui_egui::state::{Modal, SettingsTab};
+    let mut h = harness(|| demo::app(demo::engine(Mode::Beginner, true)));
+    h.state_mut().state.settings_open = true;
+    h.state_mut().state.settings_tab = SettingsTab::General;
+    h.run_steps(3);
+    h.get_by_label(env!("CARGO_PKG_VERSION"));
+    h.get_by_label("About Craft Anything").click();
+    h.run_steps(3);
+    assert!(!h.state().state.settings_open, "the dialog replaces Settings");
+    assert_eq!(h.state().state.modal, Some(Modal::About));
+    // The title bar's own Close is there too; the dialog's is added last.
+    h.get_all_by_label("Close").last().unwrap().click();
+    h.run_steps(3);
+    assert_eq!(h.state().state.modal, None);
+}
+
 #[test]
 fn a_game_is_built_with_its_engine_and_a_missing_engine_is_got_first() {
     use craft_anything_engine::workspace::TargetRef;
