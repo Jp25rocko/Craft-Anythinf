@@ -239,7 +239,12 @@ pub fn may_be_document(text: &str) -> bool {
 /// in it comes back as `None`, because only part of its name is known; `holes` are the marks a
 /// partly literal URL uses for that text (`{…}`).
 pub fn url_api(url: &str) -> Option<UrlApi> {
-    let without_scheme = url.split_once("://").map_or(url, |(_, r)| r.split_once('/').map_or("", |(_, p)| p));
+    // The host ends at the first `/`, `?` or `#`; a slash in the query or fragment
+    // (`https://x.test?next=/graphql`) is not the path.
+    let without_scheme = url.split_once("://").map_or(url, |(_, r)| match r.find(['/', '?', '#']) {
+        Some(i) if r.as_bytes().get(i) == Some(&b'/') => r.get(i + 1..).unwrap_or(""),
+        _ => "",
+    });
     let is_relative_or_absolute = url.contains("://") || url.starts_with('/');
     if !is_relative_or_absolute {
         return None;
