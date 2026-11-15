@@ -217,7 +217,8 @@ pub const GEMINI_EFFORTS: [Effort; 4] = [Effort::Minimal, Effort::Low, Effort::M
 pub fn effort_levels(config: &BackendConfig) -> &'static [Effort] {
     match config.kind {
         BackendKind::Anthropic => &Effort::ALL,
-        BackendKind::AgentCli if config.model == "claude-code" => &Effort::ALL,
+        // By adapter, not id: Claude Code is also saved as `claude`.
+        BackendKind::AgentCli if cli_agents::adapter_for(&config.model).ids().contains(&"claude-code") => &Effort::ALL,
         BackendKind::Gemini => &GEMINI_EFFORTS,
         BackendKind::Openai | BackendKind::Openrouter | BackendKind::OpenaiCompatible => &OPENAI_EFFORTS,
         BackendKind::AgentCli => &[],
@@ -765,12 +766,16 @@ impl AiHub {
         let Some(b) = cfg.backends.iter_mut().find(|b| b.config.name == name) else { return Ok(false) };
         match b.config.kind {
             BackendKind::AgentCli => {
-                if model_options::supported(&b.config) && b.options.cli_model.as_deref() != Some(model) {
+                // Ask the adapter, not the id: Claude Code is also saved as `claude`, and both must
+                // mean "no --model" when the choice is the default.
+                let claude_code = cli_agents::adapter_for(&b.config.model).ids().contains(&"claude-code");
+                let clear = claude_code && model == crate::anthropic::CLAUDE_CODE_DEFAULT;
+                if model_options::supported(&b.config) && (clear || b.options.cli_model.as_deref() != Some(model)) {
                     b.options.cli_context = None;
                     b.options.cli_reasoning_effort = None;
                     b.options.effort = None;
                 }
-                b.options.cli_model = Some(model.to_string());
+                b.options.cli_model = if clear { None } else { Some(model.to_string()) };
             }
             _ => b.config.model = model.to_string(),
         }
