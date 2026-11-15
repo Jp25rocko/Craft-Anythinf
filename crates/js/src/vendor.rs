@@ -9,8 +9,11 @@ pub fn banner_vendor(comment: &str, line: u32) -> Option<Vendor> {
     if !is_banner {
         return None;
     }
-    let words: Vec<&str> =
-        head.split(|c: char| c.is_whitespace() || c == '*' || c == '/' || c == '!' || c == '|' || c == ',').filter(|w| !w.is_empty()).collect();
+    let words: Vec<&str> = head
+        .split(|c: char| c.is_whitespace() || c == '*' || c == '!' || c == '|' || c == ',')
+        .map(|w| w.trim_matches('/'))
+        .filter(|w| !w.is_empty())
+        .collect();
     for (i, w) in words.iter().enumerate() {
         // name@1.2.3
         if let Some((n, v)) = w.rsplit_once('@')
@@ -25,7 +28,7 @@ pub fn banner_vendor(comment: &str, line: u32) -> Option<Vendor> {
                 j -= 1;
             }
             let name = words.get(j).copied().unwrap_or("");
-            if !name.is_empty() && !name.starts_with('@') && !matches!(name, "-" | "version" | "Version") {
+            if !name.is_empty() && (!name.starts_with('@') || name.contains('/')) && !matches!(name, "-" | "version" | "Version") {
                 return Some(Vendor { name: clean_name(name), version: Some(w.trim_start_matches('v').to_string()), source: "banner".into(), line });
             }
         }
