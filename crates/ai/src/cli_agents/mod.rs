@@ -2768,6 +2768,8 @@ while [ $# -gt 1 ]; do if [ "$1" = "--message-file" ]; then cp "$2" "$d/message"
             let options =
                 BackendOptions { command: Some(program.display().to_string()), cli_model: Some("anthropic/claude-sonnet-4".into()), ..Default::default() };
             let mut spec = CliSpec::new(config, options, false, None);
+            // Aider's reads can't be checked, so only a Deep run starts it.
+            spec.deep = true;
             spec.preamble = Some("P:".into());
             let mut c = CliConversation::new(spec);
             c.send(&prompt);
