@@ -1963,6 +1963,8 @@ Owner: open · Status: in progress
       — claimed: Plastic-time, branch rrfz/bugfix-r3.12-js-sequence-directives
 - [x] Match numeric bundle module and chunk identities by their JavaScript value, so hexadecimal, separated and exponent literals connect to equivalent dependency references.
       — claimed: Afloat16, branch bugfix/r3.12-bundle-numeric-identities
+- [ ] Preserve scoped package names in JavaScript license banners.
+      — claimed: Plastic-time, branch bugfix/r3.12-js-scoped-vendor-1115
 - [x] Allocate distinct recovered module paths after repeated content-hash collisions.
       — claimed: Plastic-time, branch rrfz/bugfix-r3.12-js-module-collisions
 - [x] Bound the text JavaScript facts build from constant strings, so repeated concatenation of a constant with itself cannot grow without limit.
