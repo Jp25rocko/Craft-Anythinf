@@ -399,6 +399,21 @@ fn is_executable(p: &Path) -> bool {
     p.is_file()
 }
 
+/// Whether `path` is a helper another local account could have replaced: executable, and not
+/// writable by a group or anyone else (Unix). A `bwrap` planted in a world-writable folder is
+/// not used as a sandbox, since it would run in our place.
+#[cfg(unix)]
+pub fn is_trusted_helper(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0 && m.permissions().mode() & 0o022 == 0)
+}
+
+/// Windows has no group/other permission bits; an existing file is the most this can check.
+#[cfg(not(unix))]
+pub fn is_trusted_helper(path: &Path) -> bool {
+    path.is_file()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -489,6 +504,27 @@ mod tests {
         if canon.to_str().and_then(plain_form).is_some() {
             assert!(!p.to_string_lossy().starts_with(r"\\?\"), "{p:?}");
         }
+    }
+
+    /// A file another local account could have replaced is not run as a helper: it would run
+    /// inside our process tree in our place, so a `bwrap` in a world-writable folder is skipped.
+    #[cfg(unix)]
+    #[test]
+    fn a_helper_another_local_account_could_write_is_not_trusted() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let helper = dir.path().join("bwrap");
+        std::fs::write(&helper, "#!/bin/sh\n").unwrap();
+        let mode = |m: u32| std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(m)).unwrap();
+        mode(0o755);
+        assert!(is_trusted_helper(&helper), "a root- or owner-installed helper");
+        mode(0o775);
+        assert!(!is_trusted_helper(&helper), "a group can replace it");
+        mode(0o757);
+        assert!(!is_trusted_helper(&helper), "anyone can replace it");
+        mode(0o644);
+        assert!(!is_trusted_helper(&helper), "not executable");
+        assert!(!is_trusted_helper(&dir.path().join("missing")));
     }
 
     #[test]

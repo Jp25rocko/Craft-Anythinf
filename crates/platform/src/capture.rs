@@ -857,8 +857,9 @@ mod unix {
         let started_at = now_unix_ms();
         let exe_sha = super::hash_file(std::path::Path::new(&spec.executable));
 
-        // Sandbox discovery.
-        let bwrap = crate::which::which("bwrap");
+        // Sandbox discovery. A helper another local account could have replaced is not run.
+        let found = crate::which::which("bwrap");
+        let bwrap = found.clone().filter(|p| crate::which::is_trusted_helper(p));
         let (sandbox, program, pre_args) = match spec.sandbox {
             SandboxRequest::Off => (
                 Sandbox { available: bwrap.is_some(), used: false, kind: "none", reason: Some("sandbox not requested".into()) },
@@ -875,7 +876,18 @@ mod unix {
                     (Sandbox { available: true, used: true, kind: "bubblewrap", reason: None }, path.clone().into_os_string(), args)
                 }
                 None => (
-                    Sandbox { available: false, used: false, kind: "none", reason: Some("bubblewrap (bwrap) is not installed".into()) },
+                    Sandbox {
+                        available: false,
+                        used: false,
+                        kind: "none",
+                        reason: Some(match &found {
+                            Some(path) => format!(
+                                "bubblewrap ({}) is writable by a group or other users, so it isn't trusted as a sandbox",
+                                path.display()
+                            ),
+                            None => "bubblewrap (bwrap) is not installed".into(),
+                        }),
+                    },
                     spec.executable.clone(),
                     Vec::new(),
                 ),
