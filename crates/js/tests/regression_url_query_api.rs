@@ -47,6 +47,21 @@ fn holes_end_nothing() {
     assert_eq!(url_api("{proto}://{host}/graphql"), Some(UrlApi::Graphql));
     assert_eq!(url_api("/api/{route(a?b)}/graphql"), Some(UrlApi::Graphql));
     assert_eq!(url_api("https://{host}?next=/graphql"), None);
+    // A `://` inside a hole is not the scheme, and a slash inside one is not a segment.
+    assert_eq!(url_api("{getProtocol(https://fallback.test?x=1)}://api.test/graphql"), Some(UrlApi::Graphql));
+    assert_eq!(url_api("/api/{pick(/trpc/user.list)}/status"), None);
+    assert_eq!(url_api("https://{host}/api/{pick(/trpc/a)}/graphql"), Some(UrlApi::Graphql));
+}
+
+/// The same through `fetch`, where holes name the calls that build the URL.
+#[test]
+fn analysis_keeps_holes_opaque() {
+    // The string `/trpc/user.list` is a tRPC path of its own; the URL built around it is not.
+    let a = analyze("app.js", "fetch('/api/' + pick('/trpc/user.list') + '/status');\n", &Limits::default());
+    let built: Vec<_> = a.facts.api_operations.iter().filter(|o| o.url.as_deref().is_some_and(|u| u.contains("{pick"))).collect();
+    assert!(built.is_empty(), "{built:?}");
+    let a = analyze("app.js", "fetch(getProtocol('https://fallback.test?x=1') + '://api.test/graphql');\n", &Limits::default());
+    assert!(a.facts.api_operations.iter().any(|o| o.protocol == "graphql"), "{:?}", a.facts.api_operations);
 }
 
 /// End to end: a login redirect is not an API operation; a real endpoint still is.
