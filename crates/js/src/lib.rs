@@ -77,12 +77,18 @@ pub(crate) fn guarded<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static)
     Ok(f())
 }
 
-/// Pick a source type from the file name.
+/// Pick a source type from the file name. As in Node and TypeScript, `.cts` and `.cjs` are
+/// CommonJS and `.mts` and `.mjs` are ES modules whatever their syntax; `.ts` and `.js` are
+/// decided by the syntax.
 pub fn source_type_for(path: &str) -> SourceType {
     let lower = path.to_ascii_lowercase();
     if lower.ends_with(".tsx") {
         SourceType::tsx()
-    } else if lower.ends_with(".ts") || lower.ends_with(".mts") || lower.ends_with(".cts") {
+    } else if lower.ends_with(".cts") {
+        SourceType::cjs().with_typescript(true)
+    } else if lower.ends_with(".mts") {
+        SourceType::mjs().with_typescript(true)
+    } else if lower.ends_with(".ts") {
         SourceType::ts()
     } else if lower.ends_with(".mjs") {
         SourceType::mjs().with_jsx(false)
