@@ -4452,21 +4452,21 @@ fn a_sign_in_that_stopped_working_is_called_that() {
     assert_eq!(not_signed_in("claude-code", true), "Claude Code's sign-in on this computer has expired or was signed out.");
 }
 
-#[test]
-fn a_build_says_when_it_waits_for_an_analysis_started_earlier() {
-    let d = tempfile::Builder::new().prefix("ca").tempdir().unwrap();
-    let ws = Workspace::create(d.path(), "Game", "Copy this game", TargetRef::None).unwrap();
-    let launcher = d.path().join("analyzeHeadless");
+/// A Deep-mode worker for a project in `d`, whose program another process is already analysing
+/// (a fresh lock beside its saved analysis), so the analysis waits until `limit_secs`.
+fn waiting_for_another_analysis(d: &Path, limit_secs: u64) -> (Worker, std::sync::mpsc::Receiver<RunEvent>, Workspace, PathBuf) {
+    let ws = Workspace::create(d, "Game", "Copy this game", TargetRef::None).unwrap();
+    let launcher = d.join("analyzeHeadless");
     std::fs::write(&launcher, "").unwrap();
-    let program = d.path().join("game.bin");
+    let program = d.join("game.bin");
     std::fs::write(&program, b"not really a program").unwrap();
-    let store = d.path().join("store");
+    let store = d.join("store");
 
     let mut s = craft_anything_engine::testing::session();
     s.settings.deep_mode = true;
     s.settings.engines.store_dir = Some(store.clone());
     s.settings.engines.ghidra.install_dir = Some(launcher);
-    s.settings.engines.ghidra.startup_timeout_secs = Some(3);
+    s.settings.engines.ghidra.startup_timeout_secs = Some(limit_secs);
     let (tx, rx) = std::sync::mpsc::channel();
     let w = Worker {
         wake: Default::default(),
@@ -4493,8 +4493,14 @@ fn a_build_says_when_it_waits_for_an_analysis_started_earlier() {
     let project = craft_anything_engines::ghidra::project_cache_dir(&store, &sha, &digest);
     std::fs::create_dir_all(project.parent().unwrap()).unwrap();
     std::fs::write(project.with_extension("analysing"), "").unwrap();
+    (w, rx, ws, program)
+}
 
-    let done = w.prepare_ghidra(&program).expect("deep mode with Ghidra prepares the analysis");
+#[test]
+fn a_build_says_when_it_waits_for_an_analysis_started_earlier() {
+    let d = tempfile::Builder::new().prefix("ca").tempdir().unwrap();
+    let (w, rx, ws, program) = waiting_for_another_analysis(d.path(), 3);
+    let done = w.prepare_ghidra(&program, &ws.root).expect("deep mode with Ghidra prepares the analysis");
     let _ = done.recv_timeout(Duration::from_secs(30));
     let said: Vec<String> = rx
         .try_iter()
@@ -4504,6 +4510,19 @@ fn a_build_says_when_it_waits_for_an_analysis_started_earlier() {
         })
         .collect();
     assert!(said.iter().any(|t| t.contains("waiting for Ghidra's analysis of this program, started earlier")), "{said:?}");
+}
+
+/// #948: deleting the project ends the analysis its build started, long before its time limit.
+/// Pausing doesn't: the analysis outlives the run so it isn't lost (it waits here, as it would).
+#[test]
+fn deleting_the_project_stops_its_analysis() {
+    let d = tempfile::Builder::new().prefix("ca").tempdir().unwrap();
+    let (w, _rx, ws, program) = waiting_for_another_analysis(d.path(), 600);
+    let done = w.prepare_ghidra(&program, &ws.root).expect("deep mode with Ghidra prepares the analysis");
+    assert!(done.recv_timeout(Duration::from_secs(3)).is_err(), "the analysis goes on while the project is there");
+    ws.delete().unwrap();
+    let ended = done.recv_timeout(Duration::from_secs(20)).expect("deleting the project stopped the analysis");
+    assert!(ended.is_err(), "it stopped, it didn't finish: {ended:?}");
 }
 
 /// A later run skips the study; in Deep mode it opens the program again, so the builder's tool

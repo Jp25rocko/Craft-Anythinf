@@ -111,7 +111,7 @@ impl Worker {
                     )?;
                     notes.push_str(&format!("\n## Ghidra\n\nNo program was found in {}, so Ghidra couldn't be used.\n", path.display()));
                 }
-                if let Some(done) = self.prepare_ghidra(&program) {
+                if let Some(done) = self.prepare_ghidra(&program, &ws.root) {
                     // Deep mode always waits for Ghidra: the builder then decompiles with it straight away.
                     let started = std::time::Instant::now();
                     // One line: the app's progress card shows how long it has been going.
@@ -319,7 +319,8 @@ impl Worker {
     /// Deep mode with Ghidra installed: run Ghidra's one-time analysis of `program` on its own
     /// thread; the receiver gets its result. The builder's tools share the analysis (waiting for it
     /// rather than starting another), and it carries on if the person pauses, so nothing is lost.
-    pub(super) fn prepare_ghidra(&self, program: &Path) -> Option<Receiver<Result<(), String>>> {
+    /// It stops once `project`'s record is gone: a deleted project needs it no more (#948).
+    pub(super) fn prepare_ghidra(&self, program: &Path, project: &Path) -> Option<Receiver<Result<(), String>>> {
         // A folder (nothing in it recognised as the program) isn't something Ghidra can open.
         if !program.is_file() || is_electron_runtime(program) {
             return None;
@@ -332,6 +333,7 @@ impl Worker {
             s.settings.clone()
         };
         let program = program.to_path_buf();
+        let record = project.join(craft_anything_engine::workspace::MANIFEST);
         let (tx, rx) = std::sync::mpsc::channel();
         let (feed, events, wake) = (self.feed.clone(), self.tx.clone(), self.wake.clone());
         std::thread::Builder::new()
@@ -348,7 +350,7 @@ impl Worker {
                             emit_event(&feed, &events, &wake, RunEvent::Step { step: Step::Study, text: m.to_string() });
                         }
                     };
-                    craft_anything_engine::tools::deep::prepare(&settings, &bytes, &sha, &said)
+                    craft_anything_engine::tools::deep::prepare(&settings, &bytes, &sha, &said, &|| !record.exists())
                 });
                 if let Err(e) = &result {
                     log::warn!("Ghidra's analysis of {} failed: {e}", program.display());
