@@ -34,3 +34,14 @@ fn ordinary_banners_are_unchanged() {
     }
     assert!(banner_vendor("// ordinary comment v1.2.3", 1).is_none());
 }
+/// A banner that names its package by URL still splits the URL on `/`.
+#[test]
+fn url_banners_split_on_slashes() {
+    for (c, name, version) in [
+        ("/*! https://mths.be/punycode v1.4.1 by @mathias */", "punycode", "1.4.1"),
+        ("/*! https://unpkg.com/axios@1.6.0/dist/axios.min.js */", "axios", "1.6.0"),
+    ] {
+        let v = banner_vendor(c, 1).unwrap();
+        assert_eq!((v.name.as_str(), v.version.as_deref()), (name, Some(version)), "{c}");
+    }
+}
