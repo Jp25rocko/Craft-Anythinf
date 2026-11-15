@@ -1037,6 +1037,7 @@ Owner: open · Status: in progress
         regressions cover it. Resume argument order on older Codex releases is unverified
       — refuse `--ephemeral` before startup; two-turn regression checks that no session is saved
 - [ ] Aider: move the message to `--message-file` once the launcher can write one (see the argv item above).
+      — claimed: justinjohn0306, branch feature/r2.2-aider-message-file
 - [x] Aider: read project-folder `.aider.conf.yml` and `.env` in `check_setup`, which needs the working directory passed into `check_native_options`.
       It reads the run's folder, the top of its git repository, then the home folder, as Aider
       does — PR #1210; claimed: rmsff, branch feature/r2.2-aider-project-settings
