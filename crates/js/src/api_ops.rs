@@ -239,17 +239,23 @@ pub fn may_be_document(text: &str) -> bool {
 /// in it comes back as `None`, because only part of its name is known; `holes` are the marks a
 /// partly literal URL uses for that text (`{…}`).
 pub fn url_api(url: &str) -> Option<UrlApi> {
-    // The host ends at the first `/`, `?` or `#`; a slash in the query or fragment
-    // (`https://x.test?next=/graphql`) is not the path.
-    let without_scheme = url.split_once("://").map_or(url, |(_, r)| match r.find(['/', '?', '#']) {
-        Some(i) if r.as_bytes().get(i) == Some(&b'/') => r.get(i + 1..).unwrap_or(""),
-        _ => "",
-    });
-    let is_relative_or_absolute = url.contains("://") || url.starts_with('/');
-    if !is_relative_or_absolute {
-        return None;
-    }
-    let path = without_scheme.split(['?', '#']).next().unwrap_or_default();
+    // A scheme comes before any `/`, `?` or `#`: in `/graphql?next=https://x.test` the `://`
+    // is in the query. The host then ends at the first `/`, `?` or `#`, so a slash in the query
+    // or fragment (`https://x.test?next=/graphql`) is not the path. Run-time text in holes
+    // (`{document.querySelector(#api).value}`) ends nothing.
+    let scheme = url.find("://").filter(|&i| url.get(..i).is_some_and(|s| outside_holes(s, b"/?#").is_none()));
+    let from_path = match scheme {
+        Some(i) => {
+            let rest = url.get(i + 3..).unwrap_or("");
+            match outside_holes(rest, b"/?#") {
+                Some(j) if rest.as_bytes().get(j) == Some(&b'/') => rest.get(j + 1..).unwrap_or(""),
+                _ => "",
+            }
+        }
+        None if url.starts_with('/') => url,
+        None => return None,
+    };
+    let path = from_path.get(..outside_holes(from_path, b"?#").unwrap_or(from_path.len())).unwrap_or(from_path);
     let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     if let Some(i) = segs.iter().position(|s| *s == "trpc") {
         let rest: Vec<&str> = segs.iter().skip(i + 1).copied().collect();
@@ -261,6 +267,20 @@ pub fn url_api(url: &str) -> Option<UrlApi> {
         });
     }
     (segs.last().is_some_and(|s| *s == "graphql" || *s == "gql")).then_some(UrlApi::Graphql)
+}
+
+/// The first of `stops` in `s` that is not inside a `{…}` hole.
+fn outside_holes(s: &str, stops: &[u8]) -> Option<usize> {
+    let mut depth = 0usize;
+    for (i, &b) in s.as_bytes().iter().enumerate() {
+        match b {
+            b'{' => depth += 1,
+            b'}' => depth = depth.saturating_sub(1),
+            _ if depth == 0 && stops.contains(&b) => return Some(i),
+            _ => {}
+        }
+    }
+    None
 }
 
 /// What [`url_api`] found.
