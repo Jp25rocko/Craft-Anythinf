@@ -136,8 +136,24 @@ pub struct Server {
     out: Writer,
 }
 
+/// A line for the log when the server's consent boundary is off: a client configuration that adds
+/// `--allow-run` otherwise turns every code-running call into an allowed one without a word.
+pub fn startup_notice(opts: &ServerOptions) -> Option<String> {
+    if !opts.allow_run {
+        return None;
+    }
+    Some(
+        "craft-anything mcp: --allow-run is set: tools that run code or change this computer are allowed without asking. Remove --allow-run to restore the approval step."
+            .to_string(),
+    )
+}
+
 /// Serve on this process's stdin/stdout until stdin closes.
 pub fn serve_stdio(engine: Arc<Engine>, opts: ServerOptions) -> std::io::Result<()> {
+    // stdout carries the JSON-RPC protocol, so a warning belongs on stderr.
+    if let Some(notice) = startup_notice(&opts) {
+        eprintln!("{notice}");
+    }
     let stdin = std::io::stdin();
     serve(engine, opts, stdin.lock(), Box::new(std::io::stdout()))
 }

@@ -469,3 +469,12 @@ fn restricted_mode_server_options_from_env() {
     assert!(opts.allow_web);
     assert!(opts.allow_capture);
 }
+
+/// A client config that adds `--allow-run` must not remove the approval boundary silently.
+#[test]
+fn allow_run_says_what_it_turns_off_on_startup() {
+    assert_eq!(startup_notice(&ServerOptions::default()), None, "the default server keeps the approval step");
+    let notice = startup_notice(&ServerOptions { allow_run: true, ..Default::default() }).expect("--allow-run is worth a line");
+    assert!(notice.contains("--allow-run"), "{notice}");
+    assert!(notice.contains("without asking"), "say what it turns off: {notice}");
+}
