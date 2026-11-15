@@ -71,15 +71,31 @@ pub struct Aider;
 /// Saved extra arguments without a message in them: `--message`, `--msg` and `-m` as Aider's
 /// parser declares them, followed by the message or joined to it (`--msg=…`, `-m…`). argparse
 /// also takes `--ms` for `--msg`; every shorter `--mes…` is shared with `--message-file`, so
-/// Aider refuses it (checked against 0.86.2's options).
+/// Aider refuses it (checked against 0.86.2's options). Its short flags without a value, `-v` and
+/// `-h`, may come first in one group: `-vm task` is `-v -m task`.
 fn without_message(args: &[String]) -> Vec<String> {
     let mut kept = Vec::new();
     let mut it = args.iter();
     while let Some(arg) = it.next() {
-        if matches!(arg.as_str(), "--message" | "--msg" | "--ms" | "-m") {
+        if matches!(arg.as_str(), "--message" | "--msg" | "--ms") {
             it.next();
-        } else if !(arg.starts_with("--message=") || arg.starts_with("--msg=") || arg.starts_with("--ms=") || (arg.starts_with("-m") && !arg.starts_with("--")))
-        {
+        } else if arg.starts_with("--message=") || arg.starts_with("--msg=") || arg.starts_with("--ms=") {
+            // Joined to its message: nothing of it is kept.
+        } else if let Some(group) = arg.strip_prefix('-').filter(|g| !g.starts_with('-')) {
+            let rest = group.trim_start_matches(['v', 'h']);
+            match rest.strip_prefix('m') {
+                Some(joined) => {
+                    if joined.is_empty() {
+                        it.next();
+                    }
+                    let flags = &group[..group.len() - rest.len()];
+                    if !flags.is_empty() {
+                        kept.push(format!("-{flags}"));
+                    }
+                }
+                None => kept.push(arg.clone()),
+            }
+        } else {
             kept.push(arg.clone());
         }
     }
@@ -363,6 +379,16 @@ mod tests {
             assert!(a.contains(&"--architect".to_string()), "other saved arguments stay: {a:?}");
             assert_eq!(&a[a.len() - 2..], ["--message-file".to_string(), file.display().to_string()]);
         }
+        // In a group after flags that take no value: the message goes, the flags stay.
+        for group in [&["-vm", "old task", "--architect"][..], &["-vhmold task", "--architect"]] {
+            let a = args_with(true, &saved(group), Some(file));
+            assert!(!a.iter().any(|x| x.contains("old task") || x.contains('m') && x.starts_with('-') && !x.starts_with("--")), "{group:?}: {a:?}");
+            assert!(a.contains(&"--architect".to_string()), "{a:?}");
+            assert!(a.iter().any(|x| x.starts_with("-v")), "the other flags stay: {a:?}");
+        }
+        // A short option that isn't the message, or takes a value of its own, is kept whole.
+        let a = args_with(true, &saved(&["-c", "my.yml", "-cm.yml", "-v"]), Some(file));
+        assert!(a.windows(4).any(|w| w == ["-c", "my.yml", "-cm.yml", "-v"]), "{a:?}");
         // With the message in argv it comes last, so it already wins over a saved one.
         let a = args(true, &saved(&["--message", "old task"]));
         assert_eq!(&a[a.len() - 2..], ["--message", "PRE make a game"]);
