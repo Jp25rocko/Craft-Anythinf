@@ -29,6 +29,26 @@ fn paths_still_count() {
     assert_eq!(url_api("/graphql?next=/x"), Some(UrlApi::Graphql));
 }
 
+/// A `://` in the query is not a scheme: a relative path stays a path, and text before the query
+/// is not a host.
+#[test]
+fn a_scheme_comes_before_the_path() {
+    assert_eq!(url_api("/api/graphql?next=https://x.test"), Some(UrlApi::Graphql));
+    assert_eq!(url_api("/api/trpc/user.list?from=https://x.test/a"), Some(UrlApi::Trpc { procedures: vec![Some("user.list".into())] }));
+    assert_eq!(url_api("{base}?u=http://x.test/graphql"), None);
+}
+
+/// Run-time text in a partly literal URL (`{…}`) may hold `?`, `#` or `/` without ending the
+/// host or path.
+#[test]
+fn holes_end_nothing() {
+    assert_eq!(url_api("https://{document.querySelector(#api).value}/graphql"), Some(UrlApi::Graphql));
+    assert_eq!(url_api("https://{getBase(x?y)}/api/graphql"), Some(UrlApi::Graphql));
+    assert_eq!(url_api("{proto}://{host}/graphql"), Some(UrlApi::Graphql));
+    assert_eq!(url_api("/api/{route(a?b)}/graphql"), Some(UrlApi::Graphql));
+    assert_eq!(url_api("https://{host}?next=/graphql"), None);
+}
+
 /// End to end: a login redirect is not an API operation; a real endpoint still is.
 #[test]
 fn analysis_reads_only_the_path() {
