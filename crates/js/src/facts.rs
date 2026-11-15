@@ -8,6 +8,7 @@ use oxc_ast::ast::*;
 use oxc_ast_visit::{Visit, walk};
 use oxc_semantic::Scoping;
 use oxc_span::GetSpan;
+use oxc_syntax::number::ToJsString;
 use oxc_syntax::scope::ScopeFlags;
 use oxc_syntax::symbol::SymbolId;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -152,6 +153,15 @@ struct Frame {
     index: usize,
 }
 
+/// What `+` needs to know about a value read through constants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValueType {
+    Text,
+    Number,
+    /// Neither is known, as for `x + 1` with `x` unreadable.
+    Unknown,
+}
+
 pub(crate) struct FactVisitor<'s> {
     src: &'s str,
     lines: &'s LineIndex,
@@ -160,6 +170,8 @@ pub(crate) struct FactVisitor<'s> {
     scoping: Option<&'s Scoping>,
     aliases: HashMap<Key, Ref>,
     const_strings: HashMap<Key, String>,
+    /// The constants in `const_strings` that hold a number, so `n + 1` adds.
+    const_numbers: HashSet<Key>,
     /// Bytes `const_strings` may still hold: the source's size plus [`CONST_TEXT_SLACK`].
     const_room: usize,
     /// Object literals bound to a variable: name → (prop → qualified function name).
@@ -210,6 +222,7 @@ impl<'s> FactVisitor<'s> {
             facts: ModuleFacts::default(),
             aliases: HashMap::new(),
             const_strings: HashMap::new(),
+            const_numbers: HashSet::new(),
             const_room: src.len().saturating_add(CONST_TEXT_SLACK),
             object_members: HashMap::new(),
             frames: Vec::new(),
@@ -376,13 +389,20 @@ impl<'s> FactVisitor<'s> {
     /// Render an expression as a string when it is (partly) literal: `(text, fully_literal)`.
     /// Text built from more than one part is at most [`MAX_CONST_TEXT`] bytes, or `None`.
     pub(crate) fn render_value(&self, e: &Expression<'_>, depth: usize) -> Option<(String, bool)> {
+        self.render_typed(e, depth).map(|(v, literal, _)| (v, literal))
+    }
+
+    /// [`Self::render_value`], also saying whether the value is text or a number, which `+`
+    /// needs: text joins, two numbers add. Numbers read as JavaScript turns them into text
+    /// (`0x10` is `16`).
+    fn render_typed(&self, e: &Expression<'_>, depth: usize) -> Option<(String, bool, ValueType)> {
         if depth > 16 {
             return None;
         }
         match e {
-            Expression::StringLiteral(s) => Some((s.value.to_string(), true)),
-            Expression::NumericLiteral(n) => Some((self.text(n.span).to_string(), true)),
-            Expression::ParenthesizedExpression(p) => self.render_value(&p.expression, depth + 1),
+            Expression::StringLiteral(s) => Some((s.value.to_string(), true, ValueType::Text)),
+            Expression::NumericLiteral(n) => Some((n.value.to_js_string(), true, ValueType::Number)),
+            Expression::ParenthesizedExpression(p) => self.render_typed(&p.expression, depth + 1),
             Expression::TemplateLiteral(t) => {
                 let mut out = String::new();
                 let mut literal = true;
@@ -401,22 +421,37 @@ impl<'s> FactVisitor<'s> {
                         return None;
                     }
                 }
-                Some((out, literal))
+                Some((out, literal, ValueType::Text))
             }
             Expression::BinaryExpression(b) if b.operator == BinaryOperator::Addition => {
-                let l = self.render_value(&b.left, depth + 1);
-                let r = self.render_value(&b.right, depth + 1);
+                let l = self.render_typed(&b.left, depth + 1);
+                let r = self.render_typed(&b.right, depth + 1);
+                let types = (l.as_ref().map(|x| x.2), r.as_ref().map(|x| x.2));
+                if let (Some(ValueType::Number), Some(ValueType::Number)) = types {
+                    // `1 + 2` is 3, not "12".
+                    let ((ls, ll, _), (rs, rl, _)) = (l?, r?);
+                    let sum = ls.parse::<f64>().ok()? + rs.parse::<f64>().ok()?;
+                    return Some((sum.to_js_string(), ll && rl, ValueType::Number));
+                }
                 if l.is_none() && r.is_none() {
                     return None;
                 }
-                let (ls, ll) = l.unwrap_or_else(|| (hole(&b.left, self), false));
-                let (rs, rl) = r.unwrap_or_else(|| (hole(&b.right, self), false));
+                // Text on either side makes `+` join; otherwise it may add, so the result can't
+                // be read as text.
+                let text = matches!(types, (Some(ValueType::Text), _) | (_, Some(ValueType::Text)));
+                let (ls, ll, _) = l.unwrap_or_else(|| (hole(&b.left, self), false, ValueType::Unknown));
+                let (rs, rl, _) = r.unwrap_or_else(|| (hole(&b.right, self), false, ValueType::Unknown));
                 if ls.len().saturating_add(rs.len()) > MAX_CONST_TEXT {
                     return None;
                 }
-                Some((format!("{ls}{rs}"), ll && rl))
+                Some((format!("{ls}{rs}"), ll && rl && text, if text { ValueType::Text } else { ValueType::Unknown }))
             }
-            Expression::Identifier(id) => self.key_ref(id).and_then(|k| self.const_strings.get(&k)).map(|v| (v.clone(), true)),
+            Expression::Identifier(id) => {
+                let k = self.key_ref(id)?;
+                let v = self.const_strings.get(&k)?;
+                let t = if self.const_numbers.contains(&k) { ValueType::Number } else { ValueType::Text };
+                Some((v.clone(), true, t))
+            }
             _ => None,
         }
     }
@@ -425,15 +460,19 @@ impl<'s> FactVisitor<'s> {
     /// either way, so it is never reported in place of the new value. Call after the initializer
     /// has been visited: it may still read the old text (`var u = fetch(u)`). Every constant shares
     /// one budget, so many long ones can't add up without end.
-    fn replace_const(&mut self, k: Key, value: Option<String>) {
+    fn replace_const(&mut self, k: Key, value: Option<(String, ValueType)>) {
         if let Some(old) = self.const_strings.remove(&k) {
             self.const_room = self.const_room.saturating_add(old.len());
         }
-        if let Some(v) = value
+        self.const_numbers.remove(&k);
+        if let Some((v, t)) = value
             && v.len() <= MAX_CONST_TEXT
             && v.len() <= self.const_room
         {
             self.const_room = self.const_room.saturating_sub(v.len());
+            if t == ValueType::Number {
+                self.const_numbers.insert(k.clone());
+            }
             self.const_strings.insert(k, v);
         }
     }
@@ -1338,7 +1377,7 @@ impl<'a> Visit<'a> for FactVisitor<'_> {
             }
             if let Some(n) = &name {
                 if let BindingPattern::BindingIdentifier(b) = &it.id {
-                    let value = self.render_value(inner, 0).and_then(|(v, literal)| literal.then_some(v));
+                    let value = self.render_typed(inner, 0).and_then(|(v, literal, t)| literal.then_some((v, t)));
                     replacement = Some((self.key_bind(b), value));
                 }
                 if is_function_like(inner) {
