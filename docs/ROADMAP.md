@@ -2354,6 +2354,8 @@ Owner: open · Status: in progress
       operator, a member name or `yield` divides, so brackets after it are counted instead of
       hidden in a false regex; such sources go to the lexer fallback instead of the parser.
       — claimed: AlexJoaquimPereira, branch bugfix/r3.12-js-nesting-overflow-shapes
+- [ ] Read a one-module webpack chunk only when its module is a factory function and the file names webpack or pushes onto `(g = g || [])`, so an ordinary `queue.push([[1], { callback: () => 42 }])` is not a webpack chunk.
+      — claimed: Plastic-time, branch bugfix/r3.12-js-single-module-chunk
 - [x] Read and edit JSONC registrations whose line comments end at a bare carriage return.
       — claimed: Afloat16, branch bugfix/r3.12-jsonc-carriage-return-comments
 - [x] Name code-directory flags with the bits Apple uses: hard 0x100, kill 0x200, expires 0x400,
