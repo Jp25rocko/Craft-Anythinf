@@ -2348,6 +2348,8 @@ Owner: open · Status: in progress
       — claimed: Afloat16, branch bugfix/r3.12-js-line-comment-boundaries
 - [x] Count call, index and tagged-template chains and consecutive labels in the JavaScript nesting estimate, so sources nested deeper than the parser's stack go to the lexer fallback instead of overflowing it.
       — claimed: Plastic-time, branch bugfix/r3.12-js-postfix-chain-nesting
+- [ ] Mark the function an `export { f }` list names even when the list comes before the declaration, and only the module-level binding it names, not other functions called `f`.
+      — claimed: Plastic-time, branch bugfix/r3.12-js-export-before-declaration
 - [x] Count the remaining JavaScript nesting shapes that overflow the parser's stack with two
       million links: an `if(a);else if(a);else …` chain keeps the depth its `;` clears, a class
       after `extends` nests a heritage, a run of prefix `++` counts, and `/` after an update
