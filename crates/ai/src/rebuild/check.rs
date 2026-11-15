@@ -49,12 +49,7 @@ pub(super) fn own_build_check(app: &Path, place: &str, stack: &str, build_toolch
     if let (Some(game::Builder::Unity), Some(ed)) = (engine, editor) {
         return own_unity_check(app, ed, stop);
     }
-    let tool = build_toolchain
-        .and_then(craft_anything_engine::toolchains::get)
-        .filter(|t| craft_anything_engine::toolchains::built_in_named(app, &t.name))
-        .or_else(|| stacks::toolchain_for(stack).filter(|t| craft_anything_engine::toolchains::built_in_named(app, &t.name)))
-        .or_else(|| stacks::built_in(app))
-        .or_else(|| stacks::toolchain_in(app));
+    let tool = stacks::toolchain_for_build(app, stack, build_toolchain);
     match tool.filter(|_| engine.is_none()) {
         Some(tool) => own_build(app, tool, stop),
         None if engine.is_some() || static_site(app) => build_check(app, place, stack, build_toolchain, editor, stop),
@@ -138,15 +133,7 @@ pub(super) fn build_check(app: &Path, place: &str, stack: &str, build_toolchain:
     let engine = engine_for(stack, app);
     // What the build actually used: the recorded toolchain when its files are still here, else the
     // recorded stack's, else the first toolchain with markers and sources. Game engines keep theirs.
-    let toolchain = (engine.is_none() || engine == Some(game::Builder::Rust))
-        .then(|| {
-            build_toolchain
-                .and_then(craft_anything_engine::toolchains::get)
-                .filter(|t| craft_anything_engine::toolchains::built_in_named(app, &t.name))
-                .or_else(|| stacks::toolchain_for(stack).filter(|t| craft_anything_engine::toolchains::built_in_named(app, &t.name)))
-                .or_else(|| stacks::built_in(app))
-        })
-        .flatten();
+    let toolchain = (engine.is_none() || engine == Some(game::Builder::Rust)).then(|| stacks::toolchain_for_build(app, stack, build_toolchain)).flatten();
     if let Some(tool) = toolchain {
         // A generated Node project needs its build script: the toolchain's `--if-present` is for a
         // person's own package with nothing to build, not for one the builder made.

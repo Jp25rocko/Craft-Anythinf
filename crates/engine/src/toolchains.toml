@@ -69,7 +69,7 @@ launch = [{ file = "target/*.jar", command = ["java", "-jar", "{file}"], runnabl
 [[toolchain]]
 name = "Gradle"
 found_by = ["build.gradle", "build.gradle.kts"]
-sources = ["*.java", "*.kt"]
+sources = ["*.java", "*.kt", "*.groovy"]
 build = ["gradle", "-q", "assemble"]
 test = ["gradle", "-q", "test"]
 local_programs = ["gradlew", "gradlew.bat"]

@@ -102,7 +102,7 @@ fn built_in_one(tool: &Toolchain, dir: &Path) -> bool {
 }
 
 fn sources_present(tool: &Toolchain, dir: &Path) -> bool {
-    tool.sources.is_empty() || tool.sources.iter().any(|pattern| has_source_file(dir, pattern))
+    tool.sources.is_empty() || tool.sources.iter().any(|pattern| has_source_file(dir, pattern, &tool.name))
 }
 
 fn root_entrypoint(dir: &Path, tool: &Toolchain) -> bool {
@@ -112,11 +112,14 @@ fn root_entrypoint(dir: &Path, tool: &Toolchain) -> bool {
 /// The caps on the source scan, so a hostile tree can't stall a check.
 const SOURCE_SCAN_DEPTH: usize = 6;
 const SOURCE_SCAN_FILES: usize = 20_000;
-const SOURCE_SKIPPED: &[&str] = &["target", "node_modules", ".git", ".venv", "venv", "bin", "obj", "dist", "out", "__pycache__", ".next", ".cargo"];
+/// Output folders no toolchain's sources live in.
+const SOURCE_SKIPPED: &[&str] = &["target", "node_modules", ".git", ".venv", "venv", "dist", "out", "__pycache__", ".next", ".cargo"];
 
 /// Whether a file ending in `pattern`'s suffix exists below `dir`, skipping build output.
-fn has_source_file(dir: &Path, pattern: &str) -> bool {
+/// `.NET` also skips `bin` and `obj`; a Rust package's `src/bin` is source, not output.
+fn has_source_file(dir: &Path, pattern: &str, toolchain: &str) -> bool {
     let suffix = pattern.strip_prefix('*').unwrap_or(pattern);
+    let dotnet_output = |name: &str| toolchain == ".NET" && matches!(name, "bin" | "obj");
     let mut stack = vec![(dir.to_path_buf(), 0usize)];
     let mut seen = 0usize;
     while let Some((folder, depth)) = stack.pop() {
@@ -128,7 +131,10 @@ fn has_source_file(dir: &Path, pattern: &str) -> bool {
             }
             let Ok(kind) = entry.file_type() else { continue };
             if kind.is_dir() {
-                if depth < SOURCE_SCAN_DEPTH && !entry.file_name().to_str().is_some_and(|n| SOURCE_SKIPPED.contains(&n)) {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                let name = name.as_ref();
+                if depth < SOURCE_SCAN_DEPTH && !SOURCE_SKIPPED.contains(&name) && !dotnet_output(name) {
                     stack.push((entry.path(), depth + 1));
                 }
             } else if kind.is_file() && entry.file_name().to_string_lossy().ends_with(suffix) {
