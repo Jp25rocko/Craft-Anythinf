@@ -1940,6 +1940,8 @@ Owner: open · Status: in progress
       — claimed: Plastic-time, branch bugfix/r3.12-js-constant-text-budget
 - [x] Read `.cts` files as CommonJS and `.mts` files as ES modules, as Node and TypeScript do, instead of guessing from the syntax.
       — claimed: Plastic-time, branch bugfix/r3.12-js-cts-commonjs
+- [ ] Read `+` in JavaScript constant text as JavaScript does: numbers add (`'/v' + (1 + 2)` is `/v3`, not `/v12`) and number literals read as their value (`0x10` is `16`).
+      — claimed: Plastic-time, branch bugfix/r3.12-js-numeric-addition
 - [x] Refuse oversized GNU tar long names and link targets instead of silently truncating member identities.
       — claimed: Afloat16, branch bugfix/r3.12-tar-long-identities-20261109
       Source [`de2c6390`](https://github.com/Afloat16/craft-anything/commit/de2c63908909cab675887103921ed2601b1bae9b) passed [formats tests, fmt and clippy](https://github.com/Afloat16/claude-mem/actions/runs/42640688213/job/129240669663)
