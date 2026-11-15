@@ -3536,6 +3536,49 @@ fn a_turn_ended_by_a_stopped_check_still_refreshes_the_investigation() {
     assert_eq!(w.engine.session().unknowns().count(), 1, "the view has what the finished tool wrote");
 }
 
+/// #1746 review: a stop isn't held up by a tool that keeps the session for longer, as a decompile
+/// waiting on Ghidra can; the view's refresh is given up.
+#[test]
+fn a_stopped_check_does_not_wait_for_a_busy_session() {
+    struct Finished;
+    impl Conversation for Finished {
+        fn send(&mut self, _: &str) {}
+        fn poll(&mut self) -> Vec<AgentEvent> {
+            vec![AgentEvent::ToolFinished { call_id: "1".into(), tool: "core_unknown_record".into(), ok: true, summary: String::new(), evidence_id: None }]
+        }
+        fn answer_consent(&mut self, _: &str, _: bool) {}
+        fn stop(&mut self) {}
+        fn is_busy(&self) -> bool {
+            true
+        }
+    }
+
+    let d = tempfile::tempdir().unwrap();
+    let mut ws = Workspace::create(d.path(), "Arena", "Recreate this game", TargetRef::None).unwrap();
+    let mut w = check_worker(&ws, false);
+    w.self_check = Some((Arc::new(SheetKind), 90.0));
+    let (held, holding) = std::sync::mpsc::channel::<()>();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let engine = w.engine.clone();
+    let holder = std::thread::spawn(move || {
+        let _session = engine.session();
+        held.send(()).unwrap();
+        let _ = released.recv_timeout(Duration::from_secs(60));
+    });
+    holding.recv().unwrap();
+    Inbox::new(self_check::asks_dir(&ws.root))
+        .post(craft_anything_engine::inbox::RequestKind::Question, "Check the build", "", Vec::new(), false, None)
+        .unwrap();
+    w.stop.cancel();
+    let started = Instant::now();
+    let err = w.turn_with_wait(&mut ws, &mut Finished, "Carry on", true, None, |_, _| panic!("no retry")).unwrap_err();
+    let took = started.elapsed();
+    release.send(()).unwrap();
+    holder.join().unwrap();
+    assert_eq!(err.code, ErrorCode::Cancelled, "the run still stops");
+    assert!(took < Duration::from_secs(20), "the stop waited {took:?} for the session");
+}
+
 /// A builder that reads one decompiled function (by its MCP name, as Claude Code calls it) and ends
 /// its turn.
 struct Decompiles {
