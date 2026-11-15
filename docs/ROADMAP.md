@@ -1060,7 +1060,7 @@ Owner: open · Status: in progress
       take no value and may come before `m` in one group (review of #1884): drop the `m` and
       its message from such a group and keep the other flags
       — claimed: justinjohn0306, branch bugfix/r2.2-aider-grouped-message-flag
-- [ ] Aider: on Python 3.10 a saved `-v=m "old task"` is `-v -m "old task"` and still replaced
+- [x] Aider: on Python 3.10 a saved `-v=m "old task"` is `-v -m "old task"` and still replaced
       the request in its file (review of #1895): read an `=` after one short flag before `m`
       — claimed: justinjohn0306, branch bugfix/r2.2-aider-equals-m
 - [x] Aider: read project-folder `.aider.conf.yml` and `.env` in `check_setup`, which needs the working directory passed into `check_native_options`.

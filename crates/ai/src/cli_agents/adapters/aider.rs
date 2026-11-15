@@ -82,13 +82,14 @@ fn without_message(args: &[String]) -> Vec<String> {
         } else if arg.starts_with("--message=") || arg.starts_with("--msg=") || arg.starts_with("--ms=") {
             // Joined to its message: nothing of it is kept.
         } else if let Some(group) = arg.strip_prefix('-').filter(|g| !g.starts_with('-')) {
-            let rest = group.trim_start_matches(['v', 'h']);
+            let (flags, after) = group.split_at(group.len() - group.trim_start_matches(['v', 'h']).len());
+            // Python 3.10's argparse also reads `-v=m` as `-v -m` (3.11 on refuses it).
+            let rest = after.strip_prefix('=').filter(|_| flags.len() == 1).unwrap_or(after);
             match rest.strip_prefix('m') {
                 Some(joined) => {
                     if joined.is_empty() {
                         it.next();
                     }
-                    let flags = &group[..group.len() - rest.len()];
                     if !flags.is_empty() {
                         kept.push(format!("-{flags}"));
                     }
@@ -380,7 +381,10 @@ mod tests {
             assert_eq!(&a[a.len() - 2..], ["--message-file".to_string(), file.display().to_string()]);
         }
         // In a group after flags that take no value: the message goes, the flags stay.
-        for group in [&["-vm", "old task", "--architect"][..], &["-vhmold task", "--architect"]] {
+        // Python 3.10 also reads `-v=m` as `-v -m`.
+        for group in
+            [&["-vm", "old task", "--architect"][..], &["-vhmold task", "--architect"], &["-v=m", "old task", "--architect"], &["-v=mold task", "--architect"]]
+        {
             let a = args_with(true, &saved(group), Some(file));
             assert!(!a.iter().any(|x| x.contains("old task") || x.contains('m') && x.starts_with('-') && !x.starts_with("--")), "{group:?}: {a:?}");
             assert!(a.contains(&"--architect".to_string()), "{a:?}");
