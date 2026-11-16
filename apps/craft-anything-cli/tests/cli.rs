@@ -48,6 +48,75 @@ fn commands_and_exit_codes() {
     assert_eq!(e["error"]["code"], "bad_input");
 }
 
+#[test]
+fn ai_request_rate_reads_changes_and_clears_an_api_backends_limit() {
+    let config = tempfile::tempdir().unwrap();
+    let run = |args: &[&str]| cli(args, config.path());
+    assert!(run(&["ai", "add", "Local", "--kind", "openai_compatible", "--model", "test"]).success);
+    assert!(run(&["ai", "add", "Claude Code", "--kind", "agent_cli", "--model", "claude-code"]).success);
+    let read_rate = || {
+        let output = run(&["ai", "request-rate", "Local", "--format", "json"]);
+        assert!(output.success);
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()["requests_per_minute"].clone()
+    };
+    assert_eq!(read_rate(), Value::Null);
+    assert!(run(&["ai", "request-rate", "Local", "120"]).success);
+    assert_eq!(read_rate(), 120);
+    assert!(!run(&["ai", "request-rate", "Local", "4294967296"]).success);
+    assert!(!run(&["ai", "request-rate", "Claude Code", "120"]).success);
+    assert!(!run(&["ai", "request-rate", "Unknown", "120"]).success);
+    assert_eq!(read_rate(), 120);
+    assert!(run(&["ai", "request-rate", "Local", "0"]).success);
+    assert_eq!(read_rate(), Value::Null);
+    assert!(!std::fs::read_to_string(config.path().join("config.toml")).unwrap().contains("requests_per_minute"));
+}
+
+/// #1358: the saved key can be reported, replaced and forgotten headlessly, and is never printed.
+#[test]
+fn ai_key_reports_replaces_and_forgets_without_printing_the_key() {
+    let cfg = tempfile::tempdir().unwrap();
+    let run = |args: &[&str], input: &str| {
+        Process::new(env!("CARGO_BIN_EXE_craft-anything-cli"))
+            .args(args)
+            .env("CRAFT_ANYTHING_CONFIG_DIR", cfg.path())
+            .env("CRAFT_ANYTHING_NO_KEYCHAIN", "1")
+            .stdin_bytes(input.as_bytes().to_vec())
+            .timeout(Duration::from_secs(60))
+            .run()
+            .unwrap()
+    };
+
+    assert!(run(&["ai", "add", "OpenAI", "--kind", "openai", "--model", "gpt-test", "--key-stdin"], "sk-old").success);
+    let status = run(&["ai", "key", "OpenAI", "--format", "json"], "");
+    let v: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(v["key_saved"], true, "{v}");
+    assert!(!String::from_utf8_lossy(&status.stdout).contains("sk-old"));
+
+    let replaced = run(&["ai", "key", "OpenAI", "--key-stdin", "--format", "json"], "sk-new");
+    let v: Value = serde_json::from_slice(&replaced.stdout).unwrap();
+    assert_eq!((v["key_saved"].as_bool(), v["changed"].as_str()), (Some(true), Some("replaced")), "{v}");
+    assert!(!String::from_utf8_lossy(&replaced.stdout).contains("sk-old") && !String::from_utf8_lossy(&replaced.stdout).contains("sk-new"));
+
+    let forgotten = run(&["ai", "key", "OpenAI", "--forget", "--format", "json"], "");
+    let v: Value = serde_json::from_slice(&forgotten.stdout).unwrap();
+    assert_eq!((v["key_saved"].as_bool(), v["changed"].as_str()), (Some(false), Some("forgotten")), "{v}");
+    let status = run(&["ai", "key", "OpenAI", "--format", "json"], "");
+    let v: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(v["key_saved"], false, "{v}");
+
+    let from_env = Process::new(env!("CARGO_BIN_EXE_craft-anything-cli"))
+        .args(["ai", "key", "OpenAI", "--key-env", "CRAFT_TEST_KEY", "--format", "json"])
+        .env("CRAFT_ANYTHING_CONFIG_DIR", cfg.path())
+        .env("CRAFT_ANYTHING_NO_KEYCHAIN", "1")
+        .env("CRAFT_TEST_KEY", "sk-env")
+        .timeout(Duration::from_secs(60))
+        .run()
+        .unwrap();
+    let v: Value = serde_json::from_slice(&from_env.stdout).unwrap();
+    assert_eq!((v["key_saved"].as_bool(), v["changed"].as_str()), (Some(true), Some("replaced")), "{v}");
+    assert_eq!(run(&["ai", "key", "No such backend"], "").code, Some(1));
+}
+
 /// #249: in Clean room a target tool the mode refuses was listed as available, because nothing
 /// being open yet was waived for every target tool.
 #[test]

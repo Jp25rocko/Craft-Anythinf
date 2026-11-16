@@ -203,9 +203,18 @@ impl Stdio {
         Ok(Stdio { name: name.to_string(), process, stdin, lines })
     }
 
-    fn exited(&self) -> ToolError {
-        ToolError::new(ErrorCode::EngineMissing, format!("The {} plugin exited.", self.name))
-            .with_remediation("Check its command in config.toml ([[plugins.mcp]]).")
+    /// The server is gone: its exit code and the end of what it printed, when the run has them.
+    fn exited(&mut self) -> ToolError {
+        let fix = "Check its command in config.toml ([[plugins.mcp]]).";
+        let Some(Ok(out)) = self.process.wait_timeout(Duration::from_millis(500)) else {
+            return ToolError::new(ErrorCode::EngineMissing, format!("The {} plugin exited.", self.name)).with_remediation(fix);
+        };
+        let code = out.code.map(|c| format!(" with exit code {c}")).unwrap_or_default();
+        let printed = craft_anything_platform::process::output_excerpt(&out.end_text());
+        let said = if printed.is_empty() { format!("It printed nothing. {fix}") } else { format!("What it printed last:\n{printed}\n\n{fix}") };
+        ToolError::new(ErrorCode::EngineMissing, format!("The {} plugin exited{code}.", self.name))
+            .with_remediation(said)
+            .with_details(json!({"exit_code": out.code, "output_tail": printed}))
     }
 }
 
@@ -213,10 +222,16 @@ impl Transport for Stdio {
     fn notify(&mut self, msg: &Value) -> Result<(), ToolError> {
         let mut line = msg.to_string();
         line.push('\n');
-        self.stdin
+        let sent = self
+            .stdin
             .write_all(line.as_bytes())
             .and_then(|()| self.stdin.flush())
-            .map_err(|e| ToolError::new(ErrorCode::EngineMissing, format!("The {} plugin stopped: {e}", self.name)))
+            .map_err(|e| ToolError::new(ErrorCode::EngineMissing, format!("The {} plugin stopped: {e}", self.name)));
+        // A write fails when the server has already exited: say what it printed instead.
+        if sent.is_err() && self.process.is_finished() {
+            return Err(self.exited());
+        }
+        sent
     }
 
     fn request(&mut self, msg: &Value, id: u64, deadline: Instant, cancelled: &dyn Fn() -> bool) -> Result<Value, ToolError> {

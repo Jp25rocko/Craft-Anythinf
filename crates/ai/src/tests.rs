@@ -101,12 +101,24 @@ fn mock(responses: Vec<(u16, &'static str, String)>) -> (String, Arc<Mutex<Vec<S
     let seen = Arc::new(Mutex::new(Vec::new()));
     let s2 = seen.clone();
     std::thread::spawn(move || {
-        for (status, ctype, reply) in responses {
+        let mut responses = responses.into_iter().peekable();
+        while let Some((next_status, next_type, _)) = responses.peek() {
+            let lists_next = *next_status == 200 && *next_type == "application/json";
             let Ok((stream, _)) = l.accept() else { return };
             let mut r = BufReader::new(stream.try_clone().unwrap());
             let mut line = String::new();
             r.read_line(&mut line).unwrap();
             let path = line.split_whitespace().nth(1).unwrap_or_default().to_string();
+            // Scripted questions are model lists answered with a list. Any other question is a
+            // window probe (crate::window) the test didn't script: say nothing, as a server that
+            // doesn't report its window does, and keep the scripted answer for the request after.
+            if line.starts_with("GET ") && !(lists_next && path.ends_with("/models")) {
+                let mut w = stream;
+                write!(w, "HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n").unwrap();
+                w.flush().unwrap();
+                continue;
+            }
+            let Some((status, ctype, reply)) = responses.next() else { return };
             let mut headers = Vec::new();
             let mut len = 0usize;
             loop {
@@ -172,6 +184,73 @@ fn a_coding_agent_test_says_it_only_checked_the_version() {
     assert_eq!((r.program.as_deref(), r.saved_program_replaced), (Some("cargo"), None), "the saved program ran");
 }
 
+#[cfg(unix)]
+#[test]
+/// The selected Codex CLI checks sign-in without a prompt or exposing raw status output.
+fn codex_connection_test_checks_login_without_sending_a_prompt() {
+    use std::os::unix::fs::PermissionsExt;
+    let (h, _d) = hub();
+    let dir = tempfile::tempdir().unwrap();
+    let program = dir.path().join("codex");
+    let signed_in = dir.path().join("connected");
+    let script = format!(
+        "#!/bin/sh\nif [ \"$1\" = --version ]; then echo codex-test; exit 0; fi\nif [ \"$1\" = login ] && [ \"$2\" = status ]; then\n if [ -f '{}' ]; then echo 'Logged in using ChatGPT LOGIN_STATUS_TEST_ONLY' >&2; exit 0; fi\n echo 'Not logged in' >&2; exit 1\nfi\nexit 99\n",
+        signed_in.display()
+    );
+    std::fs::write(&program, script).unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let config = BackendConfig { name: "Codex test".into(), kind: BackendKind::AgentCli, model: "codex".into(), base_url: None, ssh_host: None, enabled: true };
+    let options = BackendOptions { command: Some(program.display().to_string()), ..Default::default() };
+    h.add_backend_with(BackendEntry { config, options }, None).unwrap();
+    let error = h.test_backend("Codex test").unwrap_err();
+    assert!(error.message.contains("not signed in"));
+    assert!(error.remediation.unwrap().contains("Sign in with ChatGPT"));
+    std::fs::write(signed_in, b"test marker, not a credential").unwrap();
+    let result = h.test_backend("Codex test").unwrap();
+    assert!(result.version_only, "login is not a model/quota test");
+    assert!(result.reply.contains("signed in"));
+    assert!(!serde_json::to_string(&result).unwrap().contains("LOGIN_STATUS_TEST_ONLY"), "raw login-status output never enters the report");
+}
+
+/// A second adapter supplies sign-in results through the same API, respecting its config folder.
+#[cfg(unix)]
+#[test]
+fn local_agent_connection_checks_use_the_adapter_and_its_selected_folder() {
+    use std::os::unix::fs::PermissionsExt;
+    let (h, _d) = hub();
+    let dir = tempfile::tempdir().unwrap();
+    let program = dir.path().join("agent");
+    std::fs::write(
+        &program,
+        r#"#!/bin/sh
+if [ "$1" = --version ]; then echo agent-test; exit 0; fi
+if [ "$1" = auth ] && [ "$2" = status ] && [ "$3" = --json ]; then
+ cat "$CLAUDE_CONFIG_DIR/status.json"; exit 0
+fi
+exit 99
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let config =
+        BackendConfig { name: "Other agent".into(), kind: BackendKind::AgentCli, model: "claude-code".into(), base_url: None, ssh_host: None, enabled: true };
+    let options = BackendOptions { command: Some(program.display().to_string()), config_dir: Some(dir.path().display().to_string()), ..Default::default() };
+    h.add_backend_with(BackendEntry { config, options }, None).unwrap();
+    let status = dir.path().join("status.json");
+    std::fs::write(&status, r#"{"loggedIn":false}"#).unwrap();
+    let error = h.test_backend("Other agent").unwrap_err();
+    assert_eq!(error.message, "Other agent is installed but is not signed in.");
+    assert!(error.remediation.is_some());
+    std::fs::write(&status, r#"{"loggedIn":true,"private":"LOGIN_STATUS_TEST_ONLY"}"#).unwrap();
+    let result = h.test_backend("Other agent").unwrap();
+    assert!(result.version_only && result.reply.contains("signed in"));
+    assert!(!serde_json::to_string(&result).unwrap().contains("LOGIN_STATUS_TEST_ONLY"));
+    for unknown in ["not json", "{}"] {
+        std::fs::write(&status, unknown).unwrap();
+        assert_eq!(h.test_backend("Other agent").unwrap().reply, "agent-test", "unknown sign-in leaves the version reply unchanged");
+    }
+}
+
 /// #721: a saved path an update removed. A test that passes through the usual program says so, and
 /// doctor doesn't blame PATH when nothing can be found.
 #[test]
@@ -193,6 +272,21 @@ fn a_saved_program_that_is_gone_is_named_by_test_and_doctor() {
     let reach = h.check_reachability();
     let nowhere = reach.iter().find(|(name, _)| name == "Nowhere").map(|(_, r)| r.clone()).unwrap();
     assert_eq!(nowhere, Err(format!("there's no program at {gone}")));
+
+    // What Settings says: each AI whose saved program is gone, and what runs instead. One whose
+    // saved program is there, that has none saved, or that has nothing to run instead (doctor
+    // says that one), isn't listed.
+    let there = dir.path().join("agent-here");
+    std::fs::write(&there, "").unwrap();
+    let mut kept = backend("Kept", "cargo");
+    kept.options.command = Some(there.display().to_string());
+    h.add_backend_with(kept, None).unwrap();
+    let mut usual = backend("Unsaved", "cargo");
+    usual.options.command = None;
+    h.add_backend_with(usual, None).unwrap();
+    let replaced = h.replaced_programs();
+    assert_eq!(replaced.get("Usual").map(String::as_str), Some("cargo"));
+    assert!(!replaced.contains_key("Nowhere") && !replaced.contains_key("Kept") && !replaced.contains_key("Unsaved"), "{replaced:?}");
 }
 
 /// Every known agent with an adapter of its own is offered when adding a coding agent.
@@ -322,7 +416,7 @@ fn opencode_selection_is_validated_saved_and_run_natively_with_our_mcp_server() 
     let seen = dir.path().join("arguments.txt");
     let quote = |p: &std::path::Path| ssh::shell_quote(&p.display().to_string());
     let script = format!(
-        "#!/bin/sh\ncase \"$1\" in\napi) cat {};;\nrun) printf '%s\\n' \"$@\" > {}; cat \"$OPENCODE_CONFIG\" >> {}; printf 'done';;\n*) exit 8;;\nesac\n",
+        "#!/bin/sh\ncase \"$1\" in\napi) cat {};;\nrun) if [ \"$2\" = '--help' ]; then printf '%s\\n' '--format --standalone'; exit 0; fi; printf '%s\\n' \"$@\" > {}; cat \"$OPENCODE_CONFIG\" >> {}; printf 'done';;\n*) exit 8;;\nesac\n",
         quote(&catalogue),
         quote(&seen),
         quote(&seen)
@@ -587,6 +681,42 @@ fn a_claude_ais_effort_is_changed() {
     assert!(!h.set_effort("Nobody", Some(Effort::Low)).unwrap());
 }
 
+/// #1813: an OpenAI-style API is sent a reasoning level only once the person chooses one, and
+/// only one of OpenAI's levels; OpenRouter gets it in its own field.
+#[test]
+fn an_openai_style_ais_effort_is_sent_only_once_chosen() {
+    use crate::model::{Msg, Stop, TurnRequest};
+    let reply = || (200, "text/event-stream", chat_sse(&[json!({"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}]})]));
+    for (kind, field) in [(BackendKind::OpenaiCompatible, "/reasoning_effort"), (BackendKind::Openrouter, "/reasoning/effort")] {
+        let (h, _d) = hub();
+        let (url, seen) = mock(vec![reply(), reply()]);
+        let config = BackendConfig { name: "Box".into(), kind, model: "m".into(), base_url: Some(url), ssh_host: None, enabled: true };
+        h.add_backend(config, Some("k".into())).unwrap();
+        let ask = |h: &AiHub| {
+            let mut slot = h.build_model(&h.entry("Box").unwrap()).unwrap();
+            let messages = [Msg::user_text("hi")];
+            let request = TurnRequest { system: "S", messages: &messages, tools: &[], effort: prompt::choose_effort(slot.effort), max_tokens: 100 };
+            slot.model.turn(&request, &mut |_| {}, &Stop::default()).unwrap();
+        };
+        let effort = |h: &AiHub| crate::effort_in_use(&h.entry("Box").unwrap().config, h.options().get("Box"));
+        assert_eq!(effort(&h), None, "nothing is sent until it's chosen");
+        ask(&h);
+        assert!(h.set_effort("Box", Some(Effort::Max)).is_err(), "max isn't one of OpenAI's levels");
+        assert!(h.set_effort("Box", Some(Effort::Minimal)).unwrap());
+        assert_eq!(effort(&h), Some(Effort::Minimal));
+        ask(&h);
+        let seen = seen.lock().unwrap();
+        assert!(seen[0].body.get("reasoning_effort").is_none() && seen[0].body.get("reasoning").is_none(), "{}", seen[0].body);
+        assert_eq!(seen[1].body.pointer(field), Some(&json!("minimal")), "{}", seen[1].body);
+        drop(seen);
+        assert!(h.set_effort("Box", None).unwrap());
+        assert_eq!(effort(&h), None);
+    }
+    // Gemini is offered only the levels every Gemini model takes.
+    let gemini = BackendConfig { name: "G".into(), kind: BackendKind::Gemini, model: "gemini-2.5-pro".into(), base_url: None, ssh_host: None, enabled: true };
+    assert_eq!(crate::effort_levels(&gemini), [Effort::Minimal, Effort::Low, Effort::Medium, Effort::High]);
+}
+
 #[test]
 fn copilot_uses_shared_selection_and_rejects_failed_discovery_without_saving() {
     let (hub, _directory) = hub();
@@ -754,6 +884,47 @@ input.on('line', line => {
     }
 }
 
+/// A stand-in server that answers `GET <path>` from `routes` and 404 otherwise; its `/v1` address.
+pub(crate) fn serve_routes(routes: &'static [(&'static str, &'static str)]) -> String {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}/v1", l.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for mut s in l.incoming().flatten() {
+            let (mut got, mut buf) = (Vec::new(), [0u8; 4096]);
+            while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+                match s.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => got.extend_from_slice(&buf[..n]),
+                }
+            }
+            let head = String::from_utf8_lossy(&got);
+            let path = head.split_whitespace().nth(1).unwrap_or_default().to_string();
+            let (status, body) = routes.iter().find(|(p, _)| *p == path).map_or(("404 Not Found", "not here"), |(_, b)| ("200 OK", *b));
+            let _ = write!(s, "HTTP/1.1 {status}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+        }
+    });
+    base
+}
+
+/// #1434: FastFlowLM's `/models` lists every model it can download; taking the first started a
+/// 5.5 GB download and unloaded the model in use. A chat model the server says is loaded comes
+/// first; without `/api/ps`, or with nothing loaded, the first chat model listed is still used.
+#[test]
+fn a_server_added_without_a_model_gets_the_one_it_has_loaded() {
+    let (h, _d) = hub();
+    const CATALOGUE: &str = r#"{"object":"list","data":[{"id":"deepseek-r1:8b"},{"id":"gemma3:1b"},{"id":"qwen3.8-mtp-uncensored:27b"}]}"#;
+    let flm = serve_routes(&[
+        ("/v1/models", CATALOGUE),
+        ("/api/ps", r#"{"models":[{"name":"embed","model":"nomic-embed-text"},{"name":"qwen3.8-mtp-uncensored:27b","model":"qwen3.8-mtp-uncensored:27b"}]}"#),
+    ]);
+    assert_eq!(h.add_server("Npu", &flm, None, None).unwrap(), "qwen3.8-mtp-uncensored:27b", "the loaded chat model, not an embedding one");
+    assert_eq!(h.add_server("Named", &flm, Some("gemma3:1b"), None).unwrap(), "gemma3:1b", "a named model still wins");
+    let idle = serve_routes(&[("/v1/models", CATALOGUE), ("/api/ps", r#"{"models":[]}"#)]);
+    assert_eq!(h.add_server("Idle", &idle, None, None).unwrap(), "deepseek-r1:8b", "nothing loaded: the list's first");
+    let no_ps = serve_routes(&[("/v1/models", CATALOGUE)]);
+    assert_eq!(h.add_server("Studio", &no_ps, None, None).unwrap(), "deepseek-r1:8b", "no /api/ps: the list's first");
+}
+
 /// #54, #98: a server on another computer is added by its address, with a model that can chat
 /// when none is named; one that doesn't answer with its models isn't added.
 #[test]
@@ -773,6 +944,58 @@ fn a_server_is_added_by_its_address() {
     assert!(h.add_server("No scheme", "192.168.1.20:11434/v1", None, None).is_err());
     assert!(h.add_server(" ", &url, None, None).is_err());
     assert_eq!(h.backends().len(), 2, "only the ones that answered");
+}
+
+/// #1429: a server that takes the request and doesn't list its models in time (still starting, or
+/// loading a model) is told to wait, not to check its address, and the message isn't repeated.
+#[test]
+fn a_server_that_was_reached_but_slow_is_told_to_wait() {
+    let (h, _d) = hub();
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/v1", l.local_addr().unwrap());
+    // Accepts and holds the connection without answering, for longer than the test waits.
+    std::thread::spawn(move || {
+        let held: Vec<_> = l.incoming().take(1).flatten().collect();
+        std::thread::sleep(Duration::from_secs(10));
+        drop(held);
+    });
+    let e = h.add_server_within("Slow box", &url, None, None, Duration::from_secs(2), &Default::default()).unwrap_err();
+    assert_eq!(e.code, ErrorCode::TimedOut, "{e:?}");
+    let advice = e.remediation.clone().unwrap_or_default();
+    assert!(advice.contains("was reached") && advice.contains("2 seconds") && advice.contains("loading a model"), "{advice}");
+    assert!(!advice.contains("Check the address") && !advice.contains(&e.message), "{advice}");
+    assert!(h.backends().is_empty(), "nothing added");
+    // Nothing listening (port zero refuses): still told to check the address, without the message
+    // again in brackets.
+    let e = h.add_server("Nobody", "http://127.0.0.1:0/v1", None, None).unwrap_err();
+    let advice = e.remediation.clone().unwrap_or_default();
+    assert!(advice.contains("Check the address") && !advice.contains(&e.message), "{advice}");
+}
+
+/// #1429: adding a server that was reached but doesn't answer can be stopped while it's asked,
+/// instead of waiting out the minute, and nothing is added.
+#[test]
+fn adding_a_slow_server_can_be_stopped() {
+    let (h, _d) = hub();
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/v1", l.local_addr().unwrap());
+    std::thread::spawn(move || {
+        let held: Vec<_> = l.incoming().take(1).flatten().collect();
+        std::thread::sleep(Duration::from_secs(10));
+        drop(held);
+    });
+    let cancel = craft_anything_engine::CancelToken::default();
+    let later = cancel.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        later.cancel();
+    });
+    let started = std::time::Instant::now();
+    let e = h.add_server_until("Slow box", &url, None, None, &cancel).unwrap_err();
+    assert_eq!(e.code, ErrorCode::Cancelled, "{e:?}");
+    assert!(started.elapsed() < Duration::from_secs(5), "stopped at once, not after the wait: {:?}", started.elapsed());
+    assert!(e.remediation.is_none(), "a stop isn't a bad address: {e:?}");
+    assert!(h.backends().is_empty(), "nothing added");
 }
 
 #[test]
@@ -1388,6 +1611,56 @@ fn hub_config_keys_and_test_backend() {
         assert_eq!(e.code, ErrorCode::BadSettings);
     }
     assert!(h.compare("Local", "Local", true).is_err());
+}
+
+/// #1358: a key saved for an API backend can be replaced or forgotten without removing the
+/// backend or its settings, so a rotated key isn't hidden behind an older one.
+#[test]
+fn a_saved_api_key_can_be_replaced_or_forgotten() {
+    let (h, _d) = hub();
+    add(&h, "OpenAI", BackendKind::Openai, "https://api.openai.com/v1", Some("sk-old"));
+    assert_eq!(h.stored_backend_keys().get("OpenAI"), Some(&true));
+    assert!(h.saved_backend_key("OpenAI").unwrap());
+    h.set_backend_key("OpenAI", " sk-new ").unwrap();
+    assert_eq!(h.keys.get("OpenAI").as_deref(), Some("sk-new"));
+    assert_eq!(h.key_for(&h.entry("OpenAI").unwrap()).unwrap(), "sk-new", "the replacement is the key a request uses");
+    h.remove_backend_key("OpenAI").unwrap();
+    assert_eq!(h.stored_backend_keys().get("OpenAI"), Some(&false));
+    assert!(!h.saved_backend_key("OpenAI").unwrap());
+    assert!(h.backends().iter().any(|b| b.name == "OpenAI"), "the backend stays");
+    assert!(h.set_backend_key("OpenAI", "   ").is_err(), "an empty key is refused");
+    assert!(h.set_backend_key("No such backend", "sk-new").is_err());
+    assert!(h.remove_backend_key("No such backend").is_err());
+    add(&h, "Agent", BackendKind::AgentCli, "", None);
+    assert!(!h.stored_backend_keys().contains_key("Agent"), "an agent app has no saved key here");
+    assert!(h.saved_backend_key("Agent").is_err());
+    assert!(h.set_backend_key("Agent", "sk-new").is_err(), "a coding agent keeps its own sign-in");
+    assert!(h.remove_backend_key("Agent").is_err());
+}
+
+/// A key save and another key or backend change wait for each other: a save can't write the key
+/// after a remove has deleted the backend and its key.
+#[test]
+fn a_key_save_waits_for_another_backend_change() {
+    let (h, _d) = hub();
+    add(&h, "OpenAI", BackendKind::Openai, "https://api.openai.com/v1", None);
+    let h = Arc::new(h);
+    let edit = h.backend_edits.lock().unwrap();
+    let (started, started_rx) = std::sync::mpsc::channel();
+    let worker = {
+        let h = h.clone();
+        std::thread::spawn(move || {
+            started.send(()).unwrap();
+            h.set_backend_key("OpenAI", "sk-new")
+        })
+    };
+    started_rx.recv().unwrap();
+    // While another change holds the lock, the save can't reach the keychain.
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(!worker.is_finished(), "the save waits for the other backend change");
+    drop(edit);
+    worker.join().unwrap().unwrap();
+    assert_eq!(h.keys.get("OpenAI").as_deref(), Some("sk-new"));
 }
 
 /// #369: when OpenRouter has no provider that supports tools for a model (404 once only those are
