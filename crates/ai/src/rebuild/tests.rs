@@ -1798,11 +1798,7 @@ mod picking_up_a_build {
             Ok(())
         }
 
-        fn mcp_env(
-            &self,
-            mcp: &crate::cli_agents::McpCommand,
-            access: crate::cli_agents::Access,
-        ) -> Result<Option<(&'static str, String)>, ToolError> {
+        fn mcp_env(&self, mcp: &crate::cli_agents::McpCommand, access: crate::cli_agents::Access) -> Result<Option<(&'static str, String)>, ToolError> {
             crate::cli_agents::adapters::OpenCode.mcp_env(mcp, access)
         }
 
