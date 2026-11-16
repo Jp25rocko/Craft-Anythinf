@@ -75,8 +75,17 @@ pub struct OpenAi {
     /// The AI's own limit on one streamed answer (a slow local model can need hours); none uses
     /// the defaults.
     pub stream_limit: Option<std::time::Duration>,
+    /// Asked for its context window (see [`crate::window`]): OpenRouter and OpenAI-compatible
+    /// services are; OpenAI's and Gemini's own model lists don't say one, so they aren't.
+    pub asks_window: bool,
     /// The longest answer to ask for, once OpenRouter has said the key can't afford more (#1213).
     pub answer_cap: Option<u64>,
+    /// Send the request's effort as the reasoning level: only once the person chose one, since
+    /// a model that doesn't reason may refuse the field (#1813).
+    pub sends_effort: bool,
+    /// A server on this computer or its network, asked for its window in its own ways too; any
+    /// other is asked only through its model list.
+    pub on_this_network: bool,
 }
 
 /// An answer cap smaller than this would cut a builder's file writes short: such a refusal stays one.
@@ -91,6 +100,7 @@ impl OpenAi {
         let mut o = Self::compatible("OpenRouter", base.unwrap_or(OPENROUTER_BASE), Some(key), if model.is_empty() { OPENROUTER_DEFAULT_MODEL } else { model });
         o.extra_headers = vec![("HTTP-Referer", APP_REFERER.to_string()), ("X-Title", APP_TITLE.to_string())];
         o.openrouter = true;
+        o.asks_window = true;
         o
     }
 
@@ -111,6 +121,9 @@ impl OpenAi {
             openrouter: false,
             stream_limit: None,
             answer_cap: None,
+            sends_effort: false,
+            asks_window: false,
+            on_this_network: false,
         }
     }
 
@@ -167,6 +180,14 @@ impl OpenAi {
         if let (Some(cap), Some(o)) = (self.answer_cap, body.as_object_mut()) {
             o.insert("max_tokens".into(), json!(cap));
         }
+        if let (true, Some(o)) = (self.sends_effort, body.as_object_mut()) {
+            // OpenRouter's own field, which it maps to each provider's.
+            if self.openrouter {
+                o.insert("reasoning".into(), json!({"effort": req.effort.as_str()}));
+            } else {
+                o.insert("reasoning_effort".into(), json!(req.effort.as_str()));
+            }
+        }
         if !self.react
             && !req.tools.is_empty()
             && let Some(o) = body.as_object_mut()
@@ -188,9 +209,56 @@ impl OpenAi {
         body
     }
 
+    /// The models the server says are loaded now, read at the root of a `…/v1` address: Ollama's
+    /// `/api/ps` (Ollama and FastFlowLM answer it), else LM Studio's `/api/v0/models`, whose
+    /// entries say `state: "loaded"` (embedding models left out). Empty when the address doesn't
+    /// end in `/v1`, or the server answers neither: `/models` may list every model a server has
+    /// downloaded or can download, and asking for another loads or downloads it (#1434).
+    pub fn loaded_models(&self, timeout: std::time::Duration) -> Vec<String> {
+        let Some(root) = self.base_url.strip_suffix("/v1") else { return Vec::new() };
+        let agent = http::quick_agent(timeout);
+        let get = |path: &str| http::get_json(&agent, &self.label, &format!("{root}{path}"), &self.headers()).ok();
+        let ids = |entries: Vec<&Value>, keys: &[&str]| {
+            let mut out: Vec<String> = Vec::new();
+            for m in entries {
+                let id = keys.iter().find_map(|k| m.get(*k)).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
+                if let Some(id) = id
+                    && !out.iter().any(|seen| seen == id)
+                {
+                    out.push(id.to_string());
+                }
+            }
+            out
+        };
+        let running =
+            get("/api/ps").map(|v| ids(v.get("models").and_then(Value::as_array).map(|a| a.iter().collect()).unwrap_or_default(), &["model", "name"]));
+        if let Some(found) = running.filter(|r| !r.is_empty()) {
+            return found;
+        }
+        let Some(v) = get("/api/v0/models") else { return Vec::new() };
+        let loaded = v
+            .get("data")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter(|m| m.get("state").and_then(Value::as_str) == Some("loaded"))
+                    .filter(|m| m.get("type").and_then(Value::as_str) != Some("embeddings"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        ids(loaded, &["id"])
+    }
+
     /// Model ids from `GET /models`.
     pub fn list_models(&self, timeout: std::time::Duration) -> Result<Vec<String>, ToolError> {
-        let agent = http::quick_agent(timeout);
+        self.list_models_within(timeout, timeout)
+    }
+
+    /// Like [`OpenAi::list_models`], with its own limit for reaching the server (`connect`) and for
+    /// its answer (`wait`): a server still starting or loading a model is reached at once but may
+    /// take a while to answer, and an address nothing listens at shouldn't hold the person as long.
+    pub fn list_models_within(&self, connect: std::time::Duration, wait: std::time::Duration) -> Result<Vec<String>, ToolError> {
+        let agent = http::agent(connect, wait, wait);
         let v = http::get_json(&agent, &self.label, &self.url("models"), &self.headers())?;
         let arr = v.get("data").or_else(|| v.get("models")).and_then(Value::as_array).cloned().unwrap_or_default();
         // A catalogue may list a model only for another API (Responses, Messages): such an entry
@@ -259,6 +327,14 @@ impl ChatModel for OpenAi {
 
     fn model(&self) -> String {
         self.model.clone()
+    }
+
+    fn context_window(&self) -> Option<crate::window::Window> {
+        if !self.asks_window {
+            return None;
+        }
+        let server = crate::window::Server { base: &self.base_url, model: &self.model };
+        crate::window::read_from_server(&server, &self.headers(), self.on_this_network)
     }
 }
 
