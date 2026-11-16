@@ -587,6 +587,9 @@ Jobs	Tarefas
 Jobs ({n_jobs})	Tarefas ({n_jobs})
 Jobs ({n})	Tarefas ({n})
 Just a question: nothing was changed. Answered by	Apenas uma pergunta; nada foi alterado. Resposta de
+Make this change	Fazer esta alteração
+Make only the change you suggested for: "{question}"	Faça só a alteração que você sugeriu para: "{question}"
+Switched to Change it	Mudou para "Alterar"
 Just ask	Só perguntar
 Just look inside	Apenas examinar
 Work on my project	Trabalhar no meu projeto

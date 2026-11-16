@@ -587,6 +587,9 @@ Jobs	Tác vụ
 Jobs ({n_jobs})	Tác vụ ({n_jobs})
 Jobs ({n})	Tác vụ ({n})
 Just a question: nothing was changed. Answered by	Chỉ là một câu hỏi: không có gì bị thay đổi. Được trả lời bởi
+Make this change	Thực hiện thay đổi này
+Make only the change you suggested for: "{question}"	Chỉ thực hiện thay đổi bạn đã gợi ý cho: "{question}"
+Switched to Change it	Đã chuyển sang "Đổi nó"
 Just ask	Cứ hỏi
 Just look inside	Chỉ xem bên trong
 Work on my project	Làm việc trên dự án của tôi

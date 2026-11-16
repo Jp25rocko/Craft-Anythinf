@@ -322,6 +322,9 @@ Java runtime	Java ランタイム
 Jobs	ジョブ
 Jobs ({n_jobs})	ジョブ({n_jobs})
 Just a question: nothing was changed. Answered by	質問のみ: 何も変更されていません。回答者:
+Make this change	この変更を行う
+Make only the change you suggested for: "{question}"	「{question}」で提案した変更だけを行ってください
+Switched to Change it	「変更」に切り替えました
 Just ask	質問するだけ
 Just look inside	中を覗くだけ
 Work on my project	自分のプロジェクトで作業する

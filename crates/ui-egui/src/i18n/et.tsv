@@ -587,6 +587,9 @@ Jobs	Tööd
 Jobs ({n_jobs})	Tööd ({n_jobs})
 Jobs ({n})	Tööd ({n})
 Just a question: nothing was changed. Answered by	Ainult küsimus: midagi ei muudetud. Vastas
+Make this change	Tee see muudatus
+Make only the change you suggested for: "{question}"	Tee ainult see muudatus, mille soovitasid küsimusele: „{question}“
+Switched to Change it	Lülitatud valikule „Muuda seda“
 Just ask	Küsi lihtsalt
 Just look inside	Vaata lihtsalt sisse
 Work on my project	Tööta minu projekti kallal

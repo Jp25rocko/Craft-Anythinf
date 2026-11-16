@@ -1399,8 +1399,11 @@ fn draw_items(
     let mut next_asked = 0;
     let mut questions_up_to = |app: &mut CraftApp, ui: &mut Ui, end: usize| {
         while let Some(a) = app.asked.get_mut(&ws.root).and_then(|l| l.get_mut(next_asked)).filter(|a| a.after <= end) {
-            ui.push_id(("asked", next_asked), |ui| crate::just_ask::card(ui, a, !advanced));
+            let make = ui.push_id(("asked", next_asked), |ui| crate::just_ask::card(ui, a, !advanced)).inner.then(|| a.question.clone());
             next_asked += 1;
+            if let Some(question) = make {
+                app.make_this_change(&question);
+            }
         }
     };
     for (i, item) in items.iter().enumerate() {
@@ -1870,6 +1873,11 @@ fn composer(app: &mut CraftApp, ui: &mut Ui, width: f32, t: &Tokens, last_waitin
                 font_size: theme::BODY,
             },
         );
+        // After the box is drawn: the click on "Make this change" counts as a click outside it,
+        // which takes the cursor away from a box focused before it was drawn.
+        if std::mem::take(&mut app.state.focus_prompt) {
+            prompt_box::focus(ui, "Ask for a change");
+        }
         // Like the x on a note: the last one waiting comes back into the box to be edited.
         if out.recall
             && let Some(note) = last_waiting

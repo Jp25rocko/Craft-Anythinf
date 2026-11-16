@@ -587,6 +587,9 @@ Jobs	任务
 Jobs ({n_jobs})	任务 ({n_jobs})
 Jobs ({n})	任务（{n}）
 Just a question: nothing was changed. Answered by	仅回答问题，未作任何修改。回答者：
+Make this change	做出这项更改
+Make only the change you suggested for: "{question}"	只做你针对“{question}”建议的更改
+Switched to Change it	已切换到“更改”
 Just ask	只提问
 Just look inside	只查看内部
 Work on my project	继续做自己的项目

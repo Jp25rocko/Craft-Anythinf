@@ -617,6 +617,9 @@ Jobs	დავალებები
 Jobs ({n_jobs})	დავალებები ({n_jobs})
 Jobs ({n})	დავალებები ({n})
 Just a question: nothing was changed. Answered by	მხოლოდ კითხვა: არაფერი შეცვლილა. უპასუხა:
+Make this change	ამ ცვლილების შეტანა
+Make only the change you suggested for: "{question}"	შეიტანე მხოლოდ ის ცვლილება, რომელიც შემომთავაზე კითხვაზე: „{question}“
+Switched to Change it	გადაირთო „შეცვლა“-ზე
 Just ask	უბრალოდ იკითხეთ
 Just look inside	მხოლოდ შიგნით ჩახედვა
 Keep going without asking	გაგრძელება კითხვის გარეშე

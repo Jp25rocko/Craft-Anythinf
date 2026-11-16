@@ -453,6 +453,9 @@ pub struct UiState {
     /// The project's prompt box asks questions about the build instead of asking for changes.
     #[serde(default)]
     pub just_ask: bool,
+    /// Put the cursor in the project's prompt box on the next frame ("Make this change" filled it).
+    #[serde(skip)]
+    pub focus_prompt: bool,
     /// How tall the plan's steps are, dragged by the person (#826); `None`: the usual height.
     #[serde(default)]
     pub plan_height: Option<f32>,
@@ -573,6 +576,7 @@ impl Default for UiState {
             sidebar_folded: false,
             pins_collapsed: false,
             just_ask: false,
+            focus_prompt: false,
             plan_height: None,
             pin_draft: Default::default(),
             answers: BTreeMap::new(),

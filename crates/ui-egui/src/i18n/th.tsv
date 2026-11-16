@@ -587,6 +587,9 @@ Jobs	งาน
 Jobs ({n_jobs})	งาน ({n_jobs})
 Jobs ({n})	งาน ({n})
 Just a question: nothing was changed. Answered by	แค่คำถาม: ไม่มีอะไรเปลี่ยน ตอบโดย
+Make this change	ทำการเปลี่ยนแปลงนี้
+Make only the change you suggested for: "{question}"	ทำเฉพาะการเปลี่ยนแปลงที่คุณแนะนำสำหรับ: "{question}"
+Switched to Change it	สลับเป็น "เปลี่ยน" แล้ว
 Just ask	แค่ถาม
 Just look inside	แค่ดูข้างใน
 Work on my project	ทำงานกับโปรเจกต์ของฉัน

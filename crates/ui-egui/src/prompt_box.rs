@@ -131,10 +131,20 @@ pub struct PromptOut {
     pub restore: Option<Vec<PathBuf>>,
 }
 
+/// Put the cursor in the box `name` that `show` draws next in this `ui`.
+pub fn focus(ui: &Ui, name: &str) {
+    let id = box_id(ui, name);
+    ui.memory_mut(|m| m.request_focus(id));
+}
+
+fn box_id(ui: &Ui, name: &str) -> egui::Id {
+    ui.make_persistent_id(("prompt-box", name))
+}
+
 pub fn show(ui: &mut Ui, text: &mut String, attachments: &[PathBuf], b: PromptBox) -> PromptOut {
     let t = Tokens::get(ui.ctx());
     let mut out = PromptOut::default();
-    let id = ui.make_persistent_id(("prompt-box", b.name));
+    let id = box_id(ui, b.name);
     let focused = ui.memory(|m| m.has_focus(id));
     // The edge firms up as the box is typed in, eased like every other state.
     let how = ui.ctx().animate_bool_with_time(id.with("focus-edge"), focused, widgets::FOCUS_FADE);

@@ -588,6 +588,9 @@ Jobs	Lavori
 Jobs ({n_jobs})	Lavori ({n_jobs})
 Jobs ({n})	Lavori ({n})
 Just a question: nothing was changed. Answered by	Solo una domanda: non è cambiato nulla. Risposta di
+Make this change	Applica questa modifica
+Make only the change you suggested for: "{question}"	Applica solo la modifica che hai suggerito per: "{question}"
+Switched to Change it	Passato a "Modificalo"
 Just ask	Chiedi e basta
 Just look inside	Guarda solo dentro
 Work on my project	Lavora sul mio progetto

@@ -587,6 +587,9 @@ Jobs	工作
 Jobs ({n_jobs})	工作 ({n_jobs})
 Jobs ({n})	工作（{n}）
 Just a question: nothing was changed. Answered by	僅回答問題，未作任何修改。回答者：
+Make this change	進行這項變更
+Make only the change you suggested for: "{question}"	只做你針對「{question}」建議的變更
+Switched to Change it	已切換到「變更」
 Just ask	只提問
 Just look inside	只檢視內部
 Work on my project	繼續做自己的專案

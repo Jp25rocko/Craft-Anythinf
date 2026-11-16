@@ -575,6 +575,9 @@ Jobs	Задания
 Jobs ({n_jobs})	Задания ({n_jobs})
 Jobs ({n})	Задания ({n})
 Just a question: nothing was changed. Answered by	Просто вопрос: ничего не изменилось. Отвечено:
+Make this change	Внести это изменение
+Make only the change you suggested for: "{question}"	Внесите только предложенное изменение для вопроса: «{question}»
+Switched to Change it	Переключено на «Изменить»
 Just ask	Просто спросите
 Just look inside	Просто загляните внутрь
 Work on my project	Работать над своим проектом

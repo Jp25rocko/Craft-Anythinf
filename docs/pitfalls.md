@@ -572,6 +572,11 @@ when a header is renamed or blanked.
 
 ## Design
 
+**A button gave the prompt box the cursor, and its own click took it away.** "Make this change" asked
+for focus before the box was drawn in the same frame; the box then saw the button's click as a
+click outside it and gave the focus up. Ask for focus after the box is drawn, and test it with a
+real pointer press and release (`tests/make_this_change.rs`): an accesskit click doesn't show it.
+
 **A source inventory limit came after expansion.** Taking five thousand names after collecting
 every source path copied a large `sourceRoot` into every entry first. Count retained entries and
 expanded UTF-8 bytes before allocating each path, share the budget across indexed sections and

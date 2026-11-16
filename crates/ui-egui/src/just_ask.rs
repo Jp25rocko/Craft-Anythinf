@@ -132,15 +132,28 @@ impl CraftApp {
         }
     }
 
+    /// "Make this change" on an answer: the request goes in the prompt box (above anything already
+    /// typed) with the box on "Change it", and waits there to be read, edited and sent.
+    pub fn make_this_change(&mut self, question: &str) {
+        let request = trf("Make only the change you suggested for: \"{question}\"", &[("question", question)]);
+        let input = &mut self.state.project_input;
+        *input = if input.trim().is_empty() { request } else { format!("{request}\n{input}") };
+        self.state.just_ask = false;
+        self.state.focus_prompt = true;
+        self.toast(tr("Switched to Change it"), false);
+    }
+
     fn waiting_question(&mut self, root: &Path, question: Option<&str>) -> Option<&mut Asked> {
         self.asked.get_mut(root)?.iter_mut().find(|a| a.answer.is_none() && question.is_none_or(|q| a.question == q))
     }
 }
 
 /// One question in the conversation: a line that folds its answer away. A long answer is read by
-/// scrolling the conversation, so it never pushes the prompt box off the screen.
-pub fn card(ui: &mut Ui, a: &mut Asked, glossary: bool) {
+/// scrolling the conversation, so it never pushes the prompt box off the screen. True when
+/// "Make this change" was pressed on its answer.
+pub fn card(ui: &mut Ui, a: &mut Asked, glossary: bool) -> bool {
     let t = Tokens::get(ui.ctx());
+    let mut make = false;
     let shown = widgets::card(&t).show(ui, |ui| {
         ui.set_width(ui.available_width());
         let mut toggle = false;
@@ -172,6 +185,8 @@ pub fn card(ui: &mut Ui, a: &mut Asked, glossary: bool) {
                         .color(t.text_faint)
                         .size(theme::SMALL),
                 );
+                ui.add_space(theme::space::XS);
+                make = widgets::secondary(ui, Some("wand-sparkles"), "Make this change").clicked();
             }
             Some(Err(why)) => {
                 ui.add(egui::Label::new(RichText::new(format!("{} {why}", tr("Couldn't answer:"))).color(t.danger)).wrap());
@@ -183,6 +198,7 @@ pub fn card(ui: &mut Ui, a: &mut Asked, glossary: bool) {
         ui.scroll_to_rect(shown.response.rect, Some(egui::Align::Min));
     }
     ui.add_space(chat::MESSAGE_GAP);
+    make
 }
 
 #[cfg(test)]
@@ -233,6 +249,61 @@ mod tests {
             "not_kept": null
         })));
         assert!(app.state.toasts.iter().any(|(t, err)| !*err && t.contains("Off") && t.contains("Claude")), "{:?}", app.state.toasts);
+    }
+
+    /// "Make this change" writes the request into the box and switches it to "Change it", but sends
+    /// nothing: the person reads it, edits it or flips back to "Just ask" before anything is built.
+    #[test]
+    fn make_this_change_fills_the_box_without_sending() {
+        let mut app = crate::demo::app(crate::demo::engine(craft_anything_engine::Mode::Beginner, true));
+        app.state.just_ask = true;
+        let feed = app.state.feed.len();
+        app.make_this_change("why is it cramped on phones?");
+        assert_eq!(app.state.project_input, "Make only the change you suggested for: \"why is it cramped on phones?\"");
+        assert!(!app.state.just_ask, "switched to Change it");
+        assert!(app.state.focus_prompt, "the cursor goes to the box");
+        assert!(app.state.toasts.iter().any(|(t, err)| !*err && t == "Switched to Change it"), "{:?}", app.state.toasts);
+        assert_eq!(app.state.feed.len(), feed, "nothing was sent");
+    }
+
+    #[test]
+    fn make_this_change_keeps_what_was_already_typed() {
+        let mut app = crate::demo::app(crate::demo::engine(craft_anything_engine::Mode::Beginner, true));
+        app.state.project_input = "and make the buttons bigger".into();
+        app.make_this_change("why is it cramped?");
+        assert_eq!(app.state.project_input, "Make only the change you suggested for: \"why is it cramped?\"\nand make the buttons bigger");
+    }
+
+    /// The button is on an answer, never on a question still waiting or one that couldn't be answered.
+    #[test]
+    fn only_an_answered_question_offers_make_this_change() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let answered = Ok(Answer { text: "The card is too wide.".into(), from_session: true, backend: "Claude".into(), cost_usd: None });
+        for (answer, offered) in [(Some(answered), true), (None, false), (Some(Err("no AI".to_string())), false)] {
+            let mut a = Asked { question: "why?".into(), answer, after: 0, collapsed: false, reveal: false };
+            // (fonts ready, clicked)
+            let mut h = Harness::new_ui_state(
+                move |ui, (ready, clicked): &mut (bool, bool)| {
+                    theme::install_fonts(ui.ctx());
+                    // Installed fonts become active at the next pass, and the question is set in
+                    // the "semibold" family: draw it once they are.
+                    if !std::mem::replace(ready, true) {
+                        ui.ctx().request_repaint();
+                        return;
+                    }
+                    *clicked |= card(ui, &mut a, false);
+                },
+                (false, false),
+            );
+            // A question still waiting shows a spinner, which never stops repainting.
+            h.run_steps(3);
+            assert_eq!(h.query_by_label("Make this change").is_some(), offered);
+            if offered {
+                h.get_by_label("Make this change").click();
+                h.run_steps(2);
+                assert!(h.state().1, "the click reaches the project screen");
+            }
+        }
     }
 
     #[test]
