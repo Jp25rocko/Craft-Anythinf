@@ -414,51 +414,6 @@ fn parse_expected_number(text: &str, kind: ExpectedNumber) -> Option<serde_json:
     }
 }
 
-fn convert_sibling_numeric_strings(value: &mut Value, pointer: &str, kind: ExpectedNumber) {
-    // Split the pointer into its parent and the final segment.
-    let (parent_ptr, last) = match pointer.rfind('/') {
-        Some(0) => ("", &pointer[1..]),
-        Some(i) => (&pointer[..i], &pointer[i + 1..]),
-        None => return,
-    };
-    if last.is_empty() {
-        return;
-    }
-    let parent = if parent_ptr.is_empty() {
-        value
-    } else {
-        match value.pointer_mut(parent_ptr) {
-            Some(p) => p,
-            None => return,
-        }
-    };
-    let Value::Array(items) = parent else {
-        return;
-    };
-    if last.parse::<usize>().is_ok() {
-        // The rejected value was one array element; convert every string element.
-        for item in items.iter_mut() {
-            if let Some(text) = item.as_str()
-                && let Some(number) = parse_expected_number(text.trim(), kind)
-            {
-                *item = Value::Number(number);
-            }
-        }
-    } else {
-        // The rejected value was a field inside each array element.
-        let field = last;
-        for item in items.iter_mut() {
-            if let Some(obj) = item.as_object_mut()
-                && let Some(v) = obj.get_mut(field)
-                && let Some(text) = v.as_str()
-                && let Some(number) = parse_expected_number(text.trim(), kind)
-            {
-                *v = Value::Number(number);
-            }
-        }
-    }
-}
-
 fn coerce_numeric_string(value: &mut Value, pointer: Option<&str>, message: &str) -> bool {
     let Some(pointer) = pointer.filter(|p| !p.is_empty()) else {
         return false;
@@ -478,7 +433,6 @@ fn coerce_numeric_string(value: &mut Value, pointer: Option<&str>, message: &str
         return false;
     };
     *target = Value::Number(number);
-    convert_sibling_numeric_strings(value, pointer, kind);
     true
 }
 
@@ -612,6 +566,19 @@ mod parameter_tests {
         assert_eq!(parsed.depth, 8);
         assert_eq!(parsed.timeout_secs, 180);
         assert_eq!(parsed.ratio, 1.5);
+    }
+
+    #[test]
+    fn only_the_rejected_array_element_is_converted() {
+        // Arrays are read element by element, so a neighbouring value that is already text for a
+        // parameter that wants text keeps it, leading zeros included.
+        let (count, rest) = parse_params::<(u8, Value)>(json!(["1", "007"])).unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(rest, json!("007"));
+        let (count, text) = parse_params::<(u8, String)>(json!(["1", "007"])).unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(text, "007");
+        assert_eq!(parse_params::<Vec<u8>>(json!(["1", "2"])).unwrap(), vec![1, 2]);
     }
 
     #[test]
