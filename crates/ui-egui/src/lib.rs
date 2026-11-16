@@ -259,6 +259,10 @@ pub enum Done {
         result: Result<(), ToolError>,
         /// `CraftApp::backend_choices` when the add started: a choice made since then stands.
         choices: u64,
+        /// The address that was asked, as sent (trimmed); empty when the AI wasn't added by
+        /// address. A list of models to choose from belongs to this address, not to whatever the
+        /// form shows when the answer arrives.
+        address: String,
     },
     /// The projects folder was listed.
     Projects(Vec<craft_anything_engine::workspace::Workspace>),
@@ -1354,7 +1358,7 @@ impl CraftApp {
         let choices = self.backend_choices;
         self.jobs.spawn(i18n::trf("Connect {name}", &[("name", &name)]), true, move |_| {
             let result = hub.add_backend(config, key);
-            Ok(Done::BackendAdded { name, result, choices })
+            Ok(Done::BackendAdded { name, result, choices, address: String::new() })
         });
     }
 
@@ -1537,7 +1541,9 @@ impl CraftApp {
         if self.creating == Some(job) {
             self.creating = None;
         }
-        if self.server_form.connecting.as_ref().is_some_and(|(id, ..)| *id == job) {
+        // The form's own request: a newer Add replaces it, and an older answer is then stale.
+        let form_request = self.server_form.connecting.as_ref().is_some_and(|(id, ..)| *id == job);
+        if form_request {
             self.server_form.connecting = None;
         }
         self.chat_jobs.retain(|id| *id != job);
@@ -1741,7 +1747,7 @@ impl CraftApp {
                     self.toast(error.for_people(), true);
                 }
             }
-            Done::BackendAdded { name, result, choices } => match result {
+            Done::BackendAdded { name, result, choices, address } => match result {
                 Ok(()) => {
                     if self.server_form.name.trim() == name {
                         self.server_form = ServerForm::default();
@@ -1753,12 +1759,16 @@ impl CraftApp {
                     }
                     self.refresh_backends();
                 }
+                // Stopping an add says nothing new about the server: a list it offered stays.
                 Err(e) if e.code == ErrorCode::Cancelled => self.toast(i18n::trf("Stopped adding {name}.", &[("name", &name)]), false),
                 Err(e) => {
-                    // Several chat models and none known to be loaded: offer them in the form.
-                    let models = craft_anything_ai::models_to_choose(&e);
-                    if !models.is_empty() && self.server_form.name.trim() == name {
-                        self.server_form.choices = Some((self.server_form.address.trim().to_string(), models));
+                    // The form's own request answered: several chat models and none known to be
+                    // loaded are offered in the form, for the address that was asked, and only
+                    // while the form still shows that server. Any other failure leaves no list.
+                    if form_request {
+                        let models = craft_anything_ai::models_to_choose(&e);
+                        let same = self.server_form.name.trim() == name && self.server_form.address.trim() == address;
+                        self.server_form.choices = (!models.is_empty() && same).then_some((address, models));
                     }
                     self.toast(e.for_people(), true);
                 }
