@@ -77,7 +77,8 @@ todo = "warn"
 
 # Full debug information made about 90% of every development executable and filled disks (#1584).
 # Our own code keeps file and line for backtraces; dependencies carry none. To step through
-# variables in a debugger, build with CARGO_PROFILE_DEV_DEBUG=2.
+# variables in a debugger, build with CARGO_PROFILE_DEV_DEBUG=2 (our crates only); for
+# dependencies too, add --config 'profile.dev.package."*".debug=2'.
 [profile.dev.package."*"]
 opt-level = 2
 debug = false
