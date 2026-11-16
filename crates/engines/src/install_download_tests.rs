@@ -211,4 +211,9 @@ fn a_manual_system_proxy_is_read_as_windows_writes_it() {
         assert!(p.is_no_proxy(&uri(direct)), "{direct} goes direct");
     }
     assert!(!p.is_no_proxy(&uri("https://github.com/x")), "a download goes through the proxy");
+
+    // Rules ureq can't match as Windows does are left out, not read as something else.
+    let p = manual_proxy("proxy:8080", "*github*;10.*.0.1;github.*").unwrap();
+    assert!(!p.is_no_proxy(&uri("https://api.github.com/x")) && !p.is_no_proxy(&uri("https://10.1.0.1/x")));
+    assert!(p.is_no_proxy(&uri("https://github.com/x")), "a single `*` at the end still works");
 }

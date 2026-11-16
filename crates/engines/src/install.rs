@@ -272,6 +272,7 @@ fn system_proxy() -> Option<ureq::Proxy> {
 /// A proxy from Windows' manual settings: `host:port`, or a list like `http=h:p;https=h:p`, of
 /// which the HTTPS entry is used, else the HTTP one. Anything else (credentials, SOCKS only, no
 /// port) is no proxy. This computer and the `;`-separated `bypass` entries go direct.
+#[cfg(any(windows, test))]
 fn manual_proxy(server: &str, bypass: &str) -> Option<ureq::Proxy> {
     let entries: Vec<&str> = server.split(';').map(str::trim).filter(|s| !s.is_empty()).collect();
     let addr = if entries.iter().any(|e| e.contains('=')) {
@@ -288,7 +289,12 @@ fn manual_proxy(server: &str, bypass: &str) -> Option<ureq::Proxy> {
     }
     let mut proxy = ureq::Proxy::builder(ureq::ProxyProtocol::Http).host(host).port(port.parse().ok()?);
     let local = ["localhost", "127.0.0.1", "[::1]"];
-    for entry in local.into_iter().chain(bypass.split(';').map(str::trim).filter(|e| !e.is_empty() && *e != "<local>")) {
+    // shortcut: ureq takes one `*` at the start or the end; a rule like `*github*` or
+    // `10.*.0.1` is skipped, so those hosts go through the proxy. Engine downloads come from public
+    // hosts, so it matters only if one is listed that way; match whole patterns then.
+    let expressible = |e: &&str| !e.trim_start_matches('*').trim_end_matches('*').contains('*') && !(e.len() > 1 && e.starts_with('*') && e.ends_with('*'));
+    let rules = bypass.split(';').map(str::trim).filter(|e| !e.is_empty() && *e != "<local>").filter(expressible);
+    for entry in local.into_iter().chain(rules) {
         proxy = proxy.no_proxy(entry);
     }
     proxy.build().ok()
