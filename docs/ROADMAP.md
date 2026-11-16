@@ -522,6 +522,7 @@ been run live.
       call to a tool that doesn't exist as text
 - [ ] Run a build live with the lean list on a small local model, and note the result in STATUS
 - [ ] Each AI's tool list in Settings → AI (beside what Auto works out to) and `ai tools <name>`
+      — claimed: justinjohn0306, branch feature/r5.4-tool-list-setting
 - [x] A builder that can't see pictures (the API loop) is told it can't, then sent to open
       screenshots with Read: the website capture lines and the `--screenshot` and reference-picture
       lines in `brief.rs`, the website check's "Open each pair", the reminder after each round, the
