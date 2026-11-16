@@ -554,7 +554,7 @@ impl AgentAdapter for ClaudeCode {
                     let why = v.pointer("/message/content").map(content_text).unwrap_or_else(|| code.to_string());
                     let (message, hint) = claude_code_failure_in(&why, self.folder.as_deref());
                     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-                    let hint = hint.or_else(|| plan_limit.map(|(kind, at)| plan_limit_fix(&kind, at, now)));
+                    let hint = plan_limit.map(|(kind, at)| plan_limit_fix(&kind, at, now)).or(hint);
                     let remediation = hint.or_else(|| match failure.kind {
                         FailureKind::Authentication => self.sign_in_fix(),
                         FailureKind::Billing => Some("Check the account's credits, plan and spending limit before trying again.".into()),
