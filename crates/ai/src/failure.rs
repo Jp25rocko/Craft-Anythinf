@@ -14,6 +14,9 @@ pub enum FailureKind {
     Configuration,
     Transient,
     RateLimited,
+    /// A plan's allowance (Claude's 5-hour or weekly limit) is used up: it comes back in hours,
+    /// so trying again before then only fails again (#1919).
+    UsageLimit,
     Unknown,
 }
 

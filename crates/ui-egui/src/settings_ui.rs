@@ -190,7 +190,7 @@ fn general(app: &mut CraftApp, ui: &mut Ui) {
     row(
         ui,
         "Check for a new version",
-        "When the app opens, ask GitHub quietly for a newer Craft Anything and say so on Home. Nothing about you is sent, and no answer is fine.",
+        "When the app opens, ask GitHub quietly for a newer Craft Anything and say so on Home. The request includes no personal information; GitHub can still see your public IP address and other connection metadata. No answer is fine.",
         |ui| {
             if widgets::toggle(ui, &mut app.settings.check_for_updates, "Check quietly").changed() {
                 app.settings_changed();
