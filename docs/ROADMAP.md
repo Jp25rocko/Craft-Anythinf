@@ -1606,6 +1606,10 @@ Gaps found while using the app for real projects.
       rejection before an HTTP request, successful HTTPS redirects, hashes and file protection;
       the downgrade test fails without the HTTPS-only policy. Checked on Windows
       — claimed: Butler12345, branch bugfix/r2.9-https-engine-downloads
+- [ ] On Windows, engine downloads go through the person's manual system proxy when no proxy
+      variable is set; they only read `HTTPS_PROXY` and the like, so behind a VPN that sets the
+      system proxy the Godot and Ghidra downloads timed out (#1787, #1827)
+      — claimed: justinjohn0306, branch bugfix/r2.9-windows-proxy-downloads
 - [x] Settings → AI: a card for an AI found on this computer wraps its description beside its Add
       button; the line didn't wrap and ran on under the button
       — claimed: jgt87, branch bugfix/r2.9-detected-cards-wrap — PR #1235
