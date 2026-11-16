@@ -87,7 +87,7 @@ pub fn hero(app: &mut CraftApp, ui: &mut Ui, w: f32) {
     let (picked, fits) = ui
         .horizontal(|ui| {
             let picked = widgets::segmented(ui, &["Make my own version", "Work on my project", "Just look inside"], door, theme::ControlSize::Large);
-            let fits = ui.available_width() >= MODE_CHOICE_W;
+            let fits = ui.available_width() >= mode_choice_width(ui);
             if fits {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| mode_choice(app, ui));
             }
@@ -485,8 +485,14 @@ fn suggestions(app: &mut CraftApp, ui: &mut Ui) {
     });
 }
 
-/// The room [`mode_choice`] takes: its name and the Simple / Advanced switch.
-const MODE_CHOICE_W: f32 = 240.0;
+/// The room [`mode_choice`] takes: the Simple / Advanced switch and its name, measured in the
+/// language shown (a longer translation needs more), with the gaps beside each.
+fn mode_choice_width(ui: &Ui) -> f32 {
+    let t = Tokens::get(ui.ctx());
+    let switch = widgets::segmented_width(ui, &["Simple", "Advanced"], theme::ControlSize::Medium);
+    let name = widgets::label_galley(ui, &tr("Mode"), theme::SMALL, t.text_dim).size().x;
+    switch + name + 2.0 * ui.spacing().item_spacing.x + theme::space::SM
+}
 
 /// Simple or Advanced, beside the ways in. Simple mode's title bar leaves the switch out, so
 /// someone starting here would never see that Advanced exists. It's the app's one setting

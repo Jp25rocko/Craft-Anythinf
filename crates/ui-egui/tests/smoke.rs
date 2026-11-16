@@ -979,6 +979,21 @@ fn the_make_mode_switch_stays_inside_the_narrowest_window() {
     let advanced = h.get_by_label("Advanced").rect();
     assert!(advanced.right() <= 760.0, "the switch ends at {} in a 760-point window", advanced.right());
     assert!(advanced.top() >= door.bottom(), "on its own line below the ways in");
+
+    // Review of #1286: the room the switch needs is measured (so a longer translation moves it
+    // down sooner), not a fixed width. At every width it's beside the ways in or below them,
+    // never over them, and inside the window.
+    for width in [1600.0, 1280.0, 1100.0, 1000.0, 900.0] {
+        let mut h = harness_sized(egui::vec2(width, 820.0), || demo::app(demo::engine(Mode::Beginner, true)));
+        h.run_steps(3);
+        let door = h.get_by_label("Just look inside").rect();
+        let (simple, advanced) = (h.get_by_label("Simple").rect(), h.get_by_label("Advanced").rect());
+        let mode = h.get_by_label("Mode").rect();
+        for part in [simple, advanced, mode] {
+            assert!(!part.intersects(door), "at {width}: {part:?} overlaps the ways in at {door:?}");
+            assert!(part.left() >= 0.0 && part.right() <= width, "at {width}: {part:?} leaves the window");
+        }
+    }
 }
 
 #[test]
