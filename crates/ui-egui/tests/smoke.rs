@@ -1441,6 +1441,13 @@ fn an_api_backends_tool_list_is_chosen_in_settings() {
     h.run_steps(2);
     h.get_by_label("full").click();
     assert!(wait(&mut h, |app| app.backend_options.get("Local model").and_then(|options| options.tools) == Some(craft_anything_ai::ToolList::Full)));
+    // The row waits for each save (#1946 review), and takes the next choice once it's done.
+    assert!(wait(&mut h, |app| app.jobs.running().next().is_none()));
+    h.run_steps(2);
+    h.get_by_label("Builder's tools").click();
+    h.run_steps(2);
+    h.get_by_label("lean").click();
+    assert!(wait(&mut h, |app| app.backend_options.get("Local model").and_then(|options| options.tools) == Some(craft_anything_ai::ToolList::Lean)));
 }
 
 /// #54, #98: an AI server on another computer is added by its address in Settings → AI, with a
