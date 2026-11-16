@@ -346,6 +346,9 @@ Every round spends the person's money or quota. One that can't do anything shoul
       `agent.session_id()` is set, which API backends and OpenCode's plain adapter never set (read
       in the code, not run). So #148 didn't reach #142, which was OpenCode. Wait and send the turn
       again for them too, then close #142 — commit `f80a16a66834`
+- [ ] A Claude Code plan's 5-hour or weekly limit that's used up stops the build at once and says
+      when it resets; it was retried as a per-minute rate limit, failing again each time (#1919)
+      — claimed: justinjohn0306, branch bugfix/r5.3-plan-limit-stops
 - [x] A builder step on an API backend stops after 25 failed build commands in a row (none
       succeeding between), says so and keeps the project (`MAX_FAILED_BUILDS` in `agent.rs`, #399:
       9.4M tokens in 19 minutes of the first stage, never compiled). Try again carries on
