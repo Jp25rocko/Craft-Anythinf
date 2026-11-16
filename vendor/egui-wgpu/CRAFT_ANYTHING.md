@@ -14,9 +14,9 @@ shader filters textures by hand and never reads a sampler.
   sampler access at all.
 - `src/renderer.rs`: the fragment stage sets `HARDWARE_FILTERING` from `predictable_texture_filtering`.
   Manual filtering is bilinear and clamps to the edge, so with it on, a second pipeline with hardware
-  filtering draws the textures it can't (`Nearest`, a wrap mode other than clamp, mipmaps, or a sampler
-  of the texture's own): `manual_filtering_draws`. Craft Anything's own textures are all linear and
-  clamped, so on WARP they all take the fast pipeline.
+  filtering draws the textures it can't (`Nearest`, a wrap mode other than clamp, mipmaps, a sampler
+  of the texture's own, or one swapped in later): `manual_filtering_draws`, `replaced_samplers`.
+  Craft Anything's own textures are all linear and clamped, so on WARP they all take the fast pipeline.
 
 On every other adapter nothing changes: hardware filtering, as upstream. Everything else in this
 directory is upstream's code as published, including its `unsafe` (window handles for surfaces, and

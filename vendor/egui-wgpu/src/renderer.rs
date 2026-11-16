@@ -253,6 +253,9 @@ pub struct Renderer {
     textures: HashMap<epaint::TextureId, Texture>,
     next_user_texture_id: u64,
     samplers: HashMap<epaint::textures::TextureOptions, wgpu::Sampler>,
+    /// Craft Anything: textures whose sampler was replaced after they were made; their `options`
+    /// no longer describe the bound sampler, so they're drawn with hardware filtering.
+    replaced_samplers: ahash::HashSet<epaint::TextureId>,
 
     options: RendererOptions,
 
@@ -473,6 +476,7 @@ impl Renderer {
             textures: HashMap::default(),
             next_user_texture_id: 0,
             samplers: HashMap::default(),
+            replaced_samplers: Default::default(),
             options,
             callback_resources: CallbackResources::default(),
         }
@@ -559,7 +563,8 @@ impl Renderer {
 
                     if let Some(Texture { bind_group, options, .. }) = self.textures.get(&mesh.texture_id) {
                         if let Some(hardware) = &self.hardware_pipeline {
-                            let wants_hardware = !options.is_some_and(manual_filtering_draws);
+                            let wants_hardware = self.replaced_samplers.contains(&mesh.texture_id)
+                                || !options.is_some_and(manual_filtering_draws);
                             if wants_hardware != on_hardware {
                                 render_pass.set_pipeline(if wants_hardware { hardware } else { &self.pipeline });
                                 on_hardware = wants_hardware;
@@ -730,6 +735,10 @@ impl Renderer {
             (texture, origin, None)
         };
 
+        if bind_group.is_none() {
+            // Craft Anything: a fresh bind group uses the sampler for `options` again.
+            self.replaced_samplers.remove(&id);
+        }
         let bind_group = bind_group.unwrap_or_else(|| {
             let sampler = self
                 .samplers
@@ -775,6 +784,7 @@ impl Renderer {
     }
 
     pub fn free_texture(&mut self, id: &epaint::TextureId) {
+        self.replaced_samplers.remove(id);
         if let Some(texture) = self.textures.remove(id).and_then(|t| t.texture) {
             texture.destroy();
         }
@@ -928,6 +938,7 @@ impl Renderer {
         });
 
         *user_texture_binding = bind_group;
+        self.replaced_samplers.insert(id);
     }
 
     /// Uploads the uniform, vertex and index data used by the renderer.
