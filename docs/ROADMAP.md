@@ -350,7 +350,7 @@ Every round spends the person's money or quota. One that can't do anything shoul
       when it resets; it was retried as a per-minute rate limit, failing again each time (#1919).
       Read from the stream's `rate_limit_event` (seen live with `status: allowed`), not the message;
       not seen live with a used-up plan. Other agents' plan limits are still retried
-- [ ] The turn's closing `result` error, which the run keeps, still says which plan limit is used
+- [x] The turn's closing `result` error, which the run keeps, still says which plan limit is used
       up and when it resets; it fell back to the generic advice (#1931 review, after its merge)
       — claimed: justinjohn0306, branch bugfix/r5.3-plan-limit-closing-error
       — claimed: justinjohn0306, branch bugfix/r5.3-plan-limit-stops

@@ -495,6 +495,10 @@ pub fn claude_code_failure(why: &str) -> (String, Option<String>) {
 
 /// [`claude_code_failure`] for Claude Code in a folder chosen for it (`folder`), whose sign-in is
 /// its own.
+pub(crate) fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
 /// What to do about a used-up plan limit (`kind` as Claude Code names it), `resets_at` being
 /// Unix seconds and `now` the time it's said.
 pub(crate) fn plan_limit_fix(kind: &str, resets_at: Option<u64>, now: u64) -> String {
@@ -1664,6 +1668,11 @@ mod tests {
         assert!(!p.failure.unwrap().retryable());
         let [AgentEvent::Error { message, remediation: Some(fix), .. }] = events.as_slice() else { panic!("{events:?}") };
         assert!(message.contains("weekly limit") && fix.contains("weekly limit is used up") && fix.contains("resets in about"), "{fix}");
+        // The turn's closing result is the error the run keeps (#1931 review).
+        let events = p.line(r#"{"type":"result","is_error":true,"result":"You've hit your weekly limit · resets 6pm"}"#);
+        let [AgentEvent::Error { remediation: Some(fix), .. }] = events.as_slice() else { panic!("{events:?}") };
+        assert!(fix.contains("weekly limit is used up"), "{fix}");
+        assert_eq!(p.failure, Some(TurnFailure::new(FailureKind::UsageLimit)));
 
         // A turn its limits allowed, then a rate limit: a per-minute one, waited for and tried again.
         let mut p = StreamParser::new(adapter_for("claude-code"));
