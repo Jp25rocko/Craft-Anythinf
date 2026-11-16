@@ -6,3 +6,7 @@ Requests per minute
 Set request rate
 Set to 0 for no limit.
 Enter a whole number, or 0 for no limit.
+Craft Anything {new} is available (you have {now}).
+Get it
+Later
+Check quietly

@@ -59,11 +59,38 @@ pub fn show(app: &mut CraftApp, ui: &mut Ui) {
             ui.add_space(pad);
             ui.vertical(|ui| {
                 ui.set_width(w);
+                update_notice(app, ui);
                 crate::make::hero(app, ui, w);
                 ui.add_space(theme::space::XXL);
             });
         });
     });
+}
+
+/// One line saying a newer Craft Anything exists, with a link to it; the person can wave it away
+/// for this session. The buttons sit on their own row, so the words never run under them.
+fn update_notice(app: &mut CraftApp, ui: &mut Ui) {
+    let Some(update) = app.update.clone().filter(|_| !app.update_dismissed) else { return };
+    let t = Tokens::get(ui.ctx());
+    widgets::card(&t).inner_margin(theme::pad::BAR).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            icons::show(ui, "download", 20.0, t.accent);
+            ui.add_space(theme::space::SM);
+            let said = crate::i18n::trf("Craft Anything {new} is available (you have {now}).", &[("new", &update.version), ("now", env!("CARGO_PKG_VERSION"))]);
+            ui.add(egui::Label::new(RichText::new(said).color(t.text)).wrap());
+        });
+        ui.add_space(theme::space::SM);
+        ui.horizontal(|ui| {
+            if widgets::primary_icon(ui, Some("download"), "Get it", true).clicked() {
+                ui.ctx().open_url(egui::OpenUrl::new_tab(&update.page));
+            }
+            if widgets::secondary(ui, None, "Later").clicked() {
+                app.update_dismissed = true;
+            }
+        });
+    });
+    ui.add_space(theme::space::LG);
 }
 
 /// Friendly modals (coming soon, website, tutorials).
