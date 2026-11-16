@@ -415,19 +415,28 @@ pub fn is_trusted_helper(path: &Path) -> bool {
 /// that the check and the run name the same file even after a link is changed.
 #[cfg(unix)]
 pub fn trusted_helper(path: &Path) -> Option<PathBuf> {
+    trusted_helper_as(path, effective_uid())
+}
+
+/// [`trusted_helper`] for a given account: `me` is this process's effective user id, and nothing
+/// is trusted when it is unknown (a platform that cannot name the account vouches for no helper).
+/// Takes it as an argument so the refusals can be tested without a second account.
+#[cfg(unix)]
+fn trusted_helper_as(path: &Path, me: Option<u32>) -> Option<PathBuf> {
+    let me = me?;
     if !path.is_absolute() {
         return None;
     }
     // A link is how the helper was found, not where it is: one of ours to a file root owns (as
     // `~/.local/bin/bwrap -> /usr/bin/bwrap` and a Nix profile's are) is trusted by what it names.
     let real = std::fs::canonicalize(path).ok()?;
-    helper_in_place(&real).then_some(real)
+    helper_in_place(&real, me).then_some(real)
 }
 
 /// This account's effective user id, where the system says it in a file any process may read:
 /// `/proc/self/status` (`Uid:` is the real, effective, saved and filesystem ids). Linux is the one
-/// Unix `bwrap` runs on; anything else says `None`, and [`helper_in_place`] falls back to the mode
-/// bits and the folders' owners.
+/// Unix `bwrap` runs on. A system that says nothing (no `/proc`, or another Unix) trusts no
+/// helper rather than trusting one on its mode bits alone.
 #[cfg(target_os = "linux")]
 fn effective_uid() -> Option<u32> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
@@ -440,25 +449,23 @@ fn effective_uid() -> Option<u32> {
     None
 }
 
-/// Whether the file `path` and every folder above it are root's or this account's, and nobody
-/// else can write them: a folder's owner can rename or remove what it holds, and one another
-/// account can write can have an entry put in it. `path` is a canonical one ([`trusted_helper`]):
-/// a symlink in it now is another account swapping a folder or the file aside mid-check, so only
-/// regular files and folders count, read without following links.
+/// Whether the file `path` and every folder above it are root's or `me`'s, and nobody else can
+/// write them: a folder's owner can rename or remove what it holds, and one another account can
+/// write can have an entry put in it. `path` is a canonical one ([`trusted_helper`]): a symlink in
+/// it now is another account swapping a folder or the file aside mid-check, so only regular files
+/// and folders count, read without following links.
 #[cfg(unix)]
-fn helper_in_place(path: &Path) -> bool {
+fn helper_in_place(path: &Path, me: u32) -> bool {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
     let Ok(meta) = std::fs::symlink_metadata(path) else { return false };
     let mode = meta.permissions().mode();
     if !meta.is_file() || mode & 0o111 == 0 || mode & 0o022 != 0 {
         return false;
     }
-    let me = effective_uid();
     let owner = meta.uid();
-    // Root's or this account's. Without a way to name the account, the file must be root's or the
-    // owner's of the folder it is in (one account's whole tree, as far as the modes say).
-    let Some(folder) = path.parent().and_then(|d| std::fs::symlink_metadata(d).ok()) else { return false };
-    if me.map_or(owner != 0 && folder.uid() != owner, |me| owner != 0 && owner != me) {
+    // Root's or ours. A 0755 file of another account's in a folder root owns is one that account
+    // can change, and one in a folder of its own is one it can replace.
+    if owner != 0 && owner != me {
         return false;
     }
     let mut dir = path.parent();
@@ -467,7 +474,7 @@ fn helper_in_place(path: &Path) -> bool {
         if !m.is_dir() {
             return false;
         }
-        if me.map_or(m.uid() != 0 && m.uid() != owner, |me| m.uid() != 0 && m.uid() != me) {
+        if m.uid() != 0 && m.uid() != me {
             return false;
         }
         // A sticky folder may be writable by everyone (like /tmp): only an entry's owner can
@@ -596,32 +603,39 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_helper_another_local_account_could_write_is_not_trusted() {
-        use std::os::unix::fs::PermissionsExt as _;
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
         let dir = safe_tempdir();
         let helper = dir.path().join("bwrap");
         std::fs::write(&helper, "#!/bin/sh\n").unwrap();
         let mode = |m: u32| std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(m)).unwrap();
+        let me = std::fs::metadata(&helper).unwrap().uid();
         mode(0o755);
-        assert!(is_trusted_helper(&helper), "a root- or owner-installed helper");
+        assert!(trusted_helper_as(&helper, Some(me)).is_some(), "root's or the account's own helper");
+        // A 0755 file the account the check runs as does not own: it can change it, so it is no
+        // helper (the uid is given here so no second account is needed).
+        assert!(trusted_helper_as(&helper, Some(me.wrapping_add(1))).is_none(), "another account's file");
+        // A system that cannot name the account trusts no helper at all.
+        assert!(trusted_helper_as(&helper, None).is_none(), "no account named");
         mode(0o775);
-        assert!(!is_trusted_helper(&helper), "a group can replace it");
+        assert!(trusted_helper_as(&helper, Some(me)).is_none(), "a group can replace it");
         mode(0o757);
-        assert!(!is_trusted_helper(&helper), "anyone can replace it");
+        assert!(trusted_helper_as(&helper, Some(me)).is_none(), "anyone can replace it");
         mode(0o644);
-        assert!(!is_trusted_helper(&helper), "not executable");
-        assert!(!is_trusted_helper(&dir.path().join("missing")));
+        assert!(trusted_helper_as(&helper, Some(me)).is_none(), "not executable");
+        assert!(trusted_helper_as(&dir.path().join("missing"), Some(me)).is_none());
         // What runs is resolved against the program's working folder, not this one: a relative
         // path is no helper whatever file it names here.
-        assert!(!is_trusted_helper(Path::new("bwrap")), "a relative name");
-        assert!(!is_trusted_helper(Path::new("target/debug/bwrap")), "a relative path");
+        assert!(trusted_helper_as(Path::new("bwrap"), Some(me)).is_none(), "a relative name");
+        assert!(trusted_helper_as(Path::new("target/debug/bwrap"), Some(me)).is_none(), "a relative path");
     }
 
     /// A file of ours in a folder another account can write is as good as one of theirs: the check
-    /// follows symlinks and reads every folder above the helper, not only its own mode bits.
+    /// reads every folder above the helper, not only its own mode bits, and follows a link to the
+    /// file that runs.
     #[cfg(unix)]
     #[test]
     fn a_helper_in_a_folder_another_account_could_write_is_not_trusted() {
-        use std::os::unix::fs::PermissionsExt as _;
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
         let dir = safe_tempdir();
         let shared = dir.path().join("shared");
         std::fs::create_dir(&shared).unwrap();
@@ -629,11 +643,12 @@ mod tests {
         let helper = shared.join("bwrap");
         std::fs::write(&helper, "#!/bin/sh\n").unwrap();
         std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(!is_trusted_helper(&helper), "a folder anyone can write holds it");
+        let me = std::fs::metadata(&helper).unwrap().uid();
+        assert!(trusted_helper_as(&helper, Some(me)).is_none(), "a folder anyone can write holds it");
         // A link of ours to it in a folder of ours is no better: what runs is the file it names.
         let link = dir.path().join("bwrap-link");
         std::os::unix::fs::symlink(&helper, &link).unwrap();
-        assert!(!is_trusted_helper(&link), "a link into a folder anyone can write");
+        assert!(trusted_helper_as(&link, Some(me)).is_none(), "a link into a folder anyone can write");
         // A link to a helper in a folder of ours is trusted by the file it names, and it is that
         // file that runs: an install that links its own `bwrap` to one elsewhere is no helper of
         // another account's (a system one is root's, and passes as this one does).
@@ -643,11 +658,11 @@ mod tests {
         std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
         let to_target = dir.path().join("bwrap-elsewhere");
         std::os::unix::fs::symlink(&target, &to_target).unwrap();
-        assert_eq!(trusted_helper(&to_target), std::fs::canonicalize(&target).ok(), "a link to a trusted file");
+        assert_eq!(trusted_helper_as(&to_target, Some(me)), std::fs::canonicalize(&target).ok(), "a link to a trusted file");
         // The sticky bit lets everyone write a folder without letting anyone but an entry's owner
         // rename it (`/tmp`): the helper is ours, so it stays trusted.
         std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o1777)).unwrap();
-        assert!(is_trusted_helper(&helper), "a sticky folder only an entry's owner can change");
+        assert!(trusted_helper_as(&helper, Some(me)).is_some(), "a sticky folder only an entry's owner can change");
     }
 
     #[test]
