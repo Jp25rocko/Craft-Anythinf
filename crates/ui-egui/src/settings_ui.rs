@@ -932,9 +932,9 @@ pub(crate) fn server_form(app: &mut CraftApp, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.label(RichText::new(tr("This server lists several chat models. Choose one:")).color(t.text_faint).size(theme::CAPTION));
             let shown = if form.model.trim().is_empty() { tr("Choose a model") } else { form.model.clone() };
-            egui::ComboBox::from_id_salt("server-model-choice").icon(widgets::combo_icon).selected_text(shown).show_ui(ui, |ui| {
+            widgets::dropdown("server-model-choice").selected_text(shown).show_ui(ui, |ui| {
                 for m in models {
-                    if ui.selectable_label(form.model.trim() == m, m.as_str()).clicked() {
+                    if widgets::menu_item(ui, form.model.trim() == m, m.as_str()).clicked() {
                         form.model = m.clone();
                     }
                 }
