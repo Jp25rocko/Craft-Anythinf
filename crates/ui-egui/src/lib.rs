@@ -315,6 +315,9 @@ pub struct ServerForm {
     /// The chat models the server at `address` listed when it couldn't be told which one is in use
     /// (#1434): the form offers them to choose from while the address stays the same.
     pub choices: Option<(String, Vec<String>)>,
+    /// The address and model last picked from `choices`: that model belongs to that server, so it
+    /// goes from `model` once the address is another. A model typed by hand isn't tracked.
+    pub picked: Option<(String, String)>,
 }
 
 /// What a file dialog was for.

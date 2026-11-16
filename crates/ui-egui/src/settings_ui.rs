@@ -916,6 +916,16 @@ pub(crate) fn server_form(app: &mut CraftApp, ui: &mut Ui) {
         let w = ui.available_width() - FRAME;
         field(ui, &mut form.address, "address, e.g. http://192.168.1.20:11434/v1", w, "Server address", false);
     });
+    // A model picked from one server's list goes once the address is another, before Add can send
+    // it there (a model the server hasn't got may start a download). One typed by hand stays.
+    if let Some((from, picked)) = form.picked.take() {
+        let still_picked = form.model.trim() == picked;
+        if from == form.address.trim() && still_picked {
+            form.picked = Some((from, picked));
+        } else if still_picked {
+            form.model.clear();
+        }
+    }
     // One server at a time: pressing Add again while it's asked would only start a second wait.
     let ready = !form.name.trim().is_empty() && !form.address.trim().is_empty() && form.connecting.is_none();
     let mut add = false;
@@ -928,17 +938,20 @@ pub(crate) fn server_form(app: &mut CraftApp, ui: &mut Ui) {
     });
     // The server listed several chat models and didn't say which is loaded: the person chooses
     // (#1434). A list for another address is out of date and isn't offered.
-    if let Some((_, models)) = form.choices.as_ref().filter(|(a, _)| *a == form.address.trim()) {
+    if let Some((address, models)) = form.choices.as_ref().filter(|(a, _)| *a == form.address.trim()) {
         ui.horizontal(|ui| {
             ui.label(RichText::new(tr("This server lists several chat models. Choose one:")).color(t.text_faint).size(theme::CAPTION));
             let shown = if form.model.trim().is_empty() { tr("Choose a model") } else { form.model.clone() };
-            widgets::dropdown("server-model-choice").selected_text(shown).show_ui(ui, |ui| {
+            let r = widgets::dropdown("server-model-choice").selected_text(shown).show_ui(ui, |ui| {
                 for m in models {
                     if widgets::menu_item(ui, form.model.trim() == m, m.as_str()).clicked() {
                         form.model = m.clone();
+                        form.picked = Some((address.clone(), m.clone()));
                     }
                 }
             });
+            // Named for screen readers (and found by it in tests); the value is the model shown.
+            widgets::named(r.response, "Choose a model");
         });
     }
     // A server still starting or loading a model may take up to a minute to answer: say it's being
