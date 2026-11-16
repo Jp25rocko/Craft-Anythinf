@@ -3516,18 +3516,18 @@ fn a_turn_ended_by_a_stopped_check_still_refreshes_the_investigation() {
     w.self_check = Some((Arc::new(SheetKind), 90.0));
     let project = craft_anything_engine::project::Project::create(&ws.investigation_dir(), "Arena", Default::default()).unwrap();
     w.engine.session().open_project(project).unwrap();
-    // Another tool holds the session for a moment, as a decompile does.
+    let asks = self_check::asks_dir(&ws.root);
+    let id = Inbox::new(&asks).post(craft_anything_engine::inbox::RequestKind::Question, "Check the build", "", Vec::new(), false, None).unwrap();
+    // Another tool holds the session, as a decompile does, until the stopped check is answered:
+    // the turn's own refresh has failed by then and only the leaving one can succeed (#1746 review).
     let (held, holding) = std::sync::mpsc::channel::<()>();
     let engine = w.engine.clone();
     let holder = std::thread::spawn(move || {
         let _session = engine.session();
         held.send(()).unwrap();
-        std::thread::sleep(Duration::from_millis(500));
+        Inbox::new(&asks).wait(&id, Duration::from_secs(60), &|| false).expect("the stopped check is answered");
     });
     holding.recv().unwrap();
-    Inbox::new(self_check::asks_dir(&ws.root))
-        .post(craft_anything_engine::inbox::RequestKind::Question, "Check the build", "", Vec::new(), false, None)
-        .unwrap();
     w.stop.cancel();
     let mut agent = Wrote { investigation: ws.investigation_dir(), polls: 0 };
     let err = w.turn_with_wait(&mut ws, &mut agent, "Carry on", true, None, |_, _| panic!("no retry")).unwrap_err();
