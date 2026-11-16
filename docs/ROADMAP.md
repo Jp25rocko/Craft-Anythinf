@@ -664,6 +664,10 @@ Owner: open · Status: todo
       environment isn't hidden behind an older saved one (#1358); `ai key <name>` shows, replaces
       or forgets it headlessly, and never prints it
       — claimed: AlexJoaquimPereira, branch bugfix/r5.5-replace-saved-key
+- [ ] A tool that needs consent, refused by an API-model build without asking, tells the model
+      "The user said no" (#1938): it should say the build doesn't ask for it, and point at a
+      plugin's `consent` setting. Whether such a build should ask instead is a maintainer decision
+      — claimed: justinjohn0306, branch bugfix/r5.5-build-consent-refusal
 
 ### R5.6 Tools report only what they saw
 Owner: open · Status: todo
