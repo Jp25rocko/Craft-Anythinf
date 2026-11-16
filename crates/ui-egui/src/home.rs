@@ -72,7 +72,7 @@ pub fn show(app: &mut CraftApp, ui: &mut Ui) {
 fn update_notice(app: &mut CraftApp, ui: &mut Ui) {
     let Some(update) = app.update.clone().filter(|_| !app.update_dismissed) else { return };
     let t = Tokens::get(ui.ctx());
-    widgets::card(&t).inner_margin(Margin::symmetric(16, 12)).show(ui, |ui| {
+    widgets::card(&t).inner_margin(egui::Margin::symmetric(16, 12)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
             icons::show(ui, "download", 20.0, t.accent);
