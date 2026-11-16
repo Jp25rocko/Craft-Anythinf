@@ -87,9 +87,22 @@ impl BackendKind {
             BackendKind::Openrouter => openai::OPENROUTER_MODELS,
             BackendKind::Gemini => openai::GEMINI_MODELS,
             BackendKind::OpenaiCompatible => &[],
-            BackendKind::AgentCli => {
-                &["claude-code", "codex", "copilot", "grok", "gemini-cli", "opencode", "antigravity", "hermes", "maki", "aider", "dsh", "devin"]
-            }
+            BackendKind::AgentCli => &[
+                "claude-code",
+                "codex",
+                "copilot",
+                "grok",
+                "gemini-cli",
+                "opencode",
+                "antigravity",
+                "hermes",
+                "maki",
+                "aider",
+                "dsh",
+                "devin",
+                "pi",
+                "openclaw",
+            ],
         }
     }
 
@@ -1016,19 +1029,37 @@ impl AiHub {
         })
     }
 
+    /// The key a backend's saved `key_env` names, read from the environment at run time.
+    /// Blank counts as unset. The name is the backend's own choice (a custom endpoint's
+    /// variable); the value is never stored, logged or written anywhere.
+    fn backend_key_env(e: &BackendEntry) -> Option<String> {
+        Self::backend_key_env_with(e, |name| std::env::var(name).ok())
+    }
+
+    /// The same, with the environment passed in, so tests need no process state.
+    fn backend_key_env_with(e: &BackendEntry, get: impl Fn(&str) -> Option<String>) -> Option<String> {
+        let var = e.options.key_env.as_deref().map(str::trim).filter(|v| !v.is_empty())?;
+        get(var).filter(|k| !k.trim().is_empty())
+    }
+
     fn key_for(&self, e: &BackendEntry) -> Result<String, ToolError> {
         let base = e.config.base_url.as_deref().unwrap_or("");
-        self.keys.resolve(&e.config.name, e.config.kind).or_else(|| go_env_key(base).or_else(|| providers::env_key(base))).ok_or_else(|| {
-            let var = if openai::is_opencode_go(base) {
-                "OPENCODEGO_API_KEY or OPENCODE_GO_API_KEY"
-            } else if e.config.kind == BackendKind::OpenaiCompatible {
-                providers::of_base(base).map_or("an API key", |p| p.key_env)
-            } else {
-                keys::env_var(e.config.kind).unwrap_or("an API key")
-            };
-            ToolError::new(ErrorCode::BadSettings, format!("{} has no API key.", e.config.name))
-                .with_remediation(format!("Add the key in Settings → AI, or set {var}."))
-        })
+        self.keys
+            .resolve(&e.config.name, e.config.kind)
+            .or_else(|| Self::backend_key_env(e).or_else(|| go_env_key(base).or_else(|| providers::env_key(base))))
+            .ok_or_else(|| {
+                let var = if openai::is_opencode_go(base) {
+                    "OPENCODEGO_API_KEY or OPENCODE_GO_API_KEY".to_string()
+                } else if let Some(named) = e.options.key_env.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+                    named.to_string()
+                } else if e.config.kind == BackendKind::OpenaiCompatible {
+                    providers::of_base(base).map_or("an API key", |p| p.key_env).to_string()
+                } else {
+                    keys::env_var(e.config.kind).unwrap_or("an API key").to_string()
+                };
+                ToolError::new(ErrorCode::BadSettings, format!("{} has no API key.", e.config.name))
+                    .with_remediation(format!("Add the key in Settings → AI, or set {var}."))
+            })
     }
 
     /// Build the model for an API backend (not agent CLIs).
@@ -1209,7 +1240,7 @@ impl AiHub {
                     return Err(ToolError::unavailable("Listing models on a remote server isn't supported yet.").with_remediation("Type the model name."));
                 }
                 let b = base.unwrap_or("http://127.0.0.1:11434/v1");
-                let key = self.keys.get(&e.config.name).or_else(|| go_env_key(b).or_else(|| providers::env_key(b)));
+                let key = self.keys.get(&e.config.name).or_else(|| Self::backend_key_env(&e).or_else(|| go_env_key(b).or_else(|| providers::env_key(b))));
                 if openai::is_opencode_go(b) {
                     // The chat base ends in /openai/v1; the model list answers at /v1 instead.
                     return compatible_client(&e.config.name, &opencode_go_models_base(b), key, "", "").list_models(t);
@@ -1288,7 +1319,7 @@ impl AiHub {
         let (tx, rx) = std::sync::mpsc::channel();
         for (i, e) in entries.iter().enumerate() {
             let e = e.clone();
-            let key = self.keys.resolve(&e.config.name, e.config.kind);
+            let key = self.keys.resolve(&e.config.name, e.config.kind).or_else(|| Self::backend_key_env(&e));
             let tx = tx.clone();
             let _ = std::thread::Builder::new().name("ai-reach".into()).spawn(move || {
                 let _ = tx.send((i, reach(&e, key)));

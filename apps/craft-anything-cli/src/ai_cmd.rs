@@ -278,7 +278,13 @@ pub fn ai(cli: &Cli, c: &AiCommand, f: Format) -> u8 {
             }
             let model = model.clone().or_else(|| kind.suggested_models().first().map(|m| m.to_string())).unwrap_or_default();
             let cfg = BackendConfig { name: name.clone(), kind, model, base_url: base_url.clone(), ssh_host: ssh_host.clone(), enabled: true };
-            let entry = BackendEntry { config: cfg.clone(), options: BackendOptions { acp: acp.then_some(true), ..Default::default() } };
+            let entry = BackendEntry {
+                config: cfg.clone(),
+                // `--key-env` names the variable the key is read from at run time; the key
+                // itself was already read once above and stored, so this only persists the
+                // variable's name, never its value.
+                options: BackendOptions { acp: acp.then_some(true), key_env: key_env.clone(), ..Default::default() },
+            };
             match hub.add_backend_with(entry, key) {
                 Ok(()) => {
                     emit(&json!({"added": cfg}), f);

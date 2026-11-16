@@ -34,6 +34,10 @@ pub const ACP_AGENTS: &[(&str, &[&str])] = &[
     // Flags that belong to this mode (`--model`, `--no-leader`) go between `agent` and `stdio`.
     ("grok", &["agent"]),
     ("devin", &["acp"]),
+    // `pi-acp` (the community bridge for Pi) speaks ACP over stdio with no extra words.
+    ("pi", &[]),
+    // `openclaw acp` is OpenClaw's own ACP bridge mode.
+    ("openclaw", &["acp"]),
 ];
 
 /// Agents whose ACP mode takes the backend's model (`cli_model`), and the flag after the ACP

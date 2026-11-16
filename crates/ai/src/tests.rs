@@ -300,6 +300,33 @@ fn every_agent_with_its_own_adapter_is_offered() {
     }
 }
 
+/// A backend's saved `key_env` names the variable its key is read from at run time, and
+/// the name (never the value) survives a save and reload. Blank names count as unset.
+#[test]
+fn a_saved_key_env_names_the_variable_and_round_trips() {
+    let entry = |key_env: Option<&str>| BackendEntry {
+        config: BackendConfig {
+            name: "Custom".into(),
+            kind: BackendKind::OpenaiCompatible,
+            model: "m".into(),
+            base_url: Some("https://example.com/v1".into()),
+            ssh_host: None,
+            enabled: true,
+        },
+        options: BackendOptions { key_env: key_env.map(str::to_string), ..Default::default() },
+    };
+    let get = |var: &str| (var == "MY_ROUTER_KEY").then(|| "sk-test".to_string());
+    assert_eq!(AiHub::backend_key_env_with(&entry(Some("MY_ROUTER_KEY")), get), Some("sk-test".to_string()));
+    assert_eq!(AiHub::backend_key_env_with(&entry(Some("  ")), get), None, "blank is unset");
+    assert_eq!(AiHub::backend_key_env_with(&entry(None), get), None, "no name, no key");
+    assert_eq!(AiHub::backend_key_env_with(&entry(Some("OTHER_VAR")), get), None, "another variable is not read");
+
+    let (h, dir) = hub();
+    h.add_backend_with(entry(Some("MY_ROUTER_KEY")), None).unwrap();
+    let saved = AiConfig::from_table(&craft_anything_engine::Settings::load_from(&dir.path().join("config.toml")).ai).unwrap();
+    assert_eq!(saved.get("Custom").map(|e| e.options.key_env.clone()), Some(Some("MY_ROUTER_KEY".to_string())));
+}
+
 /// #37: doctor asks a local server for its models instead of trusting an open port.
 #[test]
 fn a_local_server_is_reachable_only_when_it_lists_models() {

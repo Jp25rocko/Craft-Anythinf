@@ -446,6 +446,10 @@ pub fn clients(host: &Host) -> Vec<Client> {
     let dsh = host.var("DSH_HOME").unwrap_or_else(|| h.join(".dsh"));
     add("dsh", "DeepSeek harness (DSH)", dsh.join("cordis.patch.yml"), vec![dsh.clone()], Format::Manual, vec![], Shape::Plain, None);
 
+    // OpenClaw: its config is a JSON file we don't edit automatically either.
+    let ocw = h.join(".openclaw");
+    add("openclaw", "OpenClaw", ocw.join("openclaw.json"), vec![ocw.clone()], Format::Manual, vec![], Shape::Plain, None);
+
     for c in &mut v {
         if c.id == "pi" {
             c.empty_is_invalid = true;
@@ -453,6 +457,11 @@ pub fn clients(host: &Host) -> Vec<Client> {
         if c.id == "dsh" {
             c.manual = Some(
                 "Add an MCP client entry for a stdio server named craft-anything whose command is the path of craft-anything-cli with the argument `mcp`, using the harness's own configuration commands.",
+            );
+        }
+        if c.id == "openclaw" {
+            c.manual = Some(
+                "Add an MCP server named craft-anything to OpenClaw's config (`~/.openclaw/openclaw.json`, under `mcpServers`): a stdio server whose command is the path of craft-anything-cli with the argument `mcp`.",
             );
         }
     }

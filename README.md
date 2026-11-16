@@ -11,7 +11,15 @@
   <img src="assets/app-icon/hicolor/256x256/apps/ai.storyteller.craft-anything.png" width="128" height="128" alt="Craft Anything icon: an engraved raven on a blue tile">
 </p>
 
-<h1 align="center">Craft Anything</h1>
+<h1 align="center">Gretongan Craft</h1>
+
+<p align="center">
+  A fork of <a href="https://github.com/storytold/craft-anything">Craft Anything</a> by storytold —
+  the same open-source, clean-room engine, plus generic AI backends (Pi, OpenClaw, …) and custom
+  OpenAI-compatible endpoints. Upstream work © storytold, licensed MIT OR Apache-2.0; see
+  <a href="ATTRIBUTION.md">ATTRIBUTION.md</a>. Binary and machine names stay <code>craft-anything-*</code>
+  so existing setups keep working.
+</p>
 
 <p align="center">
   <b>English</b> · <a href="README.ja.md">日本語</a> · <a href="README.zh.md">简体中文</a> · <a href="README.zh-hant.md">繁體中文</a> · <a href="README.ko.md">한국어</a> · <a href="README.es.md">Español</a> · <a href="README.fr.md">Français</a> · <a href="README.vi.md">Tiếng Việt</a> · <a href="README.pt.md">Português</a> · <a href="README.th.md">ไทย</a> · <a href="README.tr.md">Türkçe</a>

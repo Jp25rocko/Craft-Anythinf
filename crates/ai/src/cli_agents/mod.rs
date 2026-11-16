@@ -56,6 +56,10 @@ pub const KNOWN: &[(&str, &str, &str)] = &[
     ("aider", "aider", "Aider"),
     ("dsh", "dsh", "DeepSeek Harness"),
     ("devin", "devin", "Devin"),
+    // Pi itself speaks `--mode rpc`, not ACP: the program is the community `pi-acp` bridge.
+    ("pi", "pi-acp", "Pi (via pi-acp)"),
+    // OpenClaw speaks ACP through its own bridge mode (`openclaw acp`).
+    ("openclaw", "openclaw", "OpenClaw"),
 ];
 
 pub fn program_for(agent: &str) -> String {
@@ -3513,7 +3517,7 @@ echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
         reg.register(Arc::new(EchoAgent));
         assert_eq!(
             format!("{reg:?}"),
-            r#"["claude-code", "codex", "gemini-cli", "opencode", "antigravity", "hermes", "maki", "aider", "copilot", "grok", "dsh", "devin", "echo-agent"]"#
+            r#"["claude-code", "codex", "gemini-cli", "opencode", "antigravity", "hermes", "maki", "aider", "copilot", "grok", "dsh", "devin", "pi", "openclaw", "echo-agent"]"#
         );
     }
 

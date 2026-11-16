@@ -24,7 +24,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Parser)]
-#[command(name = "craft-anything-cli", version, about = "Craft Anything on the command line: every tool, the MCP server, setup and doctor.")]
+#[command(
+    name = "craft-anything-cli",
+    version,
+    about = "Gretongan Craft on the command line: every tool, the MCP server, setup and doctor. (A fork of Craft Anything.)"
+)]
 #[command(after_help = "Every tool is also a subcommand: `craft-anything-cli commands` lists them, `craft-anything-cli <tool> --help` shows its options.\n\
 When a tool has its own --format option (core-target-open, ...), --format after the tool name goes to the tool; pick the output with --output-format (or --format before the tool name). `report` has no format option of its own: use `report --html` for HTML.")]
 pub struct Cli {

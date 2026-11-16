@@ -137,6 +137,13 @@ pub struct BackendOptions {
     /// Agent CLIs: the program to run instead of the default for `model`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
+    /// API backends: the environment variable the key is read from at run time, when no key
+    /// is stored for the backend (for a custom OpenAI-compatible endpoint, e.g. a self-hosted
+    /// router). The variable's *name* is saved, never its value; a stored key still wins, so
+    /// to switch to the variable, forget the stored key first (`ai key <name> --forget`).
+    /// Named on `ai add` with `--key-env`; a backend added before this field existed has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_env: Option<String>,
     /// Agent CLIs: extra arguments placed before the prompt.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,

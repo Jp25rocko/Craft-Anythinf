@@ -13,7 +13,9 @@ mod dsh;
 mod grok;
 mod hermes;
 mod maki;
+mod openclaw;
 mod opencode;
+mod pi;
 pub use aider::Aider;
 pub use antigravity::Antigravity;
 pub use copilot::Copilot;
@@ -22,7 +24,9 @@ pub use dsh::DeepSeekHarness;
 pub use grok::Grok;
 pub use hermes::Hermes;
 pub use maki::Maki;
+pub use openclaw::OpenClaw;
 pub use opencode::OpenCode;
+pub use pi::Pi;
 
 /// What a run's arguments are built from.
 pub struct ArgsCx<'a> {
@@ -322,6 +326,8 @@ impl AgentAdapters {
                 Arc::new(Grok),
                 Arc::new(DeepSeekHarness),
                 Arc::new(Devin),
+                Arc::new(Pi),
+                Arc::new(OpenClaw),
             ],
         }
     }
