@@ -322,6 +322,9 @@ only when it's green and a maintainer has fully reviewed it, code as well as wor
       `self_cli_path` no longer found the CLI and the two rebuild tests that start it failed on
       `main` and every pull request. It now finds the CLI from that folder too
       — claimed: bflatastic, branch bugfix/r5.2-cli-in-new-build-dir
+- [x] UI-string pull requests stop colliding on one catalog per language: each language is a
+      folder of TSV files combined at build time, and a new string goes in its own file (#1465)
+      — claimed: javapriyan, branch bugfix/r5.2-i18n-catalog-folders
 
 ### R5.3 A builder that can't make progress stops
 Owner: open · Status: todo
