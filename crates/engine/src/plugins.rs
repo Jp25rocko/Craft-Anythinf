@@ -231,7 +231,7 @@ pub fn refresh(p: &McpPlugin, config: &std::path::Path) -> Result<Vec<RemoteTool
         return Err(ToolError::invalid(problem).with_remediation("Fix it in config.toml ([[plugins.mcp]])."));
     }
     let mut client = start(p, config)?;
-    let tools = client.list_tools(START_TIMEOUT).map_err(|e| logged(p, config, e))?;
+    let tools = client.list_tools(START_TIMEOUT).map_err(|e| logged(p, config, client.with_output(e)))?;
     let path = p.cache_path(config);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| ToolError::io(dir.display(), e))?;
@@ -248,14 +248,15 @@ fn start(p: &McpPlugin, config: &std::path::Path) -> Result<McpClient, ToolError
 
 /// A local server that didn't start or answer: write what ran and what it printed to a failure
 /// log in the config folder's `logs/` ([`crate::failure_log`]) and name it in the error. Its
-/// environment is left out, since it can hold keys. A remote server's error already says what it
+/// environment is left out and what looks like a key in its arguments is hidden. A remote server's error already says what it
 /// answered, and its address can carry a key, so it gets no log; nor does a stop.
 fn logged(p: &McpPlugin, config: &std::path::Path, e: ToolError) -> ToolError {
     let Server::Command(cmd) = p.server() else { return e };
     if e.code == ErrorCode::Cancelled {
         return e;
     }
-    let command = craft_anything_platform::process::printable_command(std::ffi::OsStr::new(&cmd.command), &cmd.args);
+    // An argument can carry a key where no flag names it (`https://…/mcp?token=…`).
+    let command = crate::journal::scrubbed_line(&craft_anything_platform::process::printable_command(std::ffi::OsStr::new(&cmd.command), &cmd.args));
     let detail = |k: &str| e.details.as_ref().and_then(|d| d.get(k)).cloned();
     let report = crate::failure_log::Report {
         what: format!("The {} plugin (an MCP server) didn't start", p.display_name()),
@@ -391,8 +392,12 @@ mod tests {
     #[test]
     fn a_plugin_that_cant_start_names_its_log_and_a_remote_one_writes_none() {
         let config = tempfile::tempdir().unwrap();
-        let e = refresh(&plugin("craft-anything-no-such-plugin-server"), config.path()).unwrap_err();
+        let args = vec!["--url".to_string(), "https://mcp.example.test/mcp?token=plainsecretvalue42".to_string()];
+        let e = refresh(&McpPlugin { args, ..plugin("craft-anything-no-such-plugin-server") }, config.path()).unwrap_err();
         assert!(e.remediation.unwrap_or_default().contains("The details are in"), "a missing program is logged too");
+        let logs: Vec<_> = std::fs::read_dir(crate::failure_log::dir_in(config.path())).unwrap().flatten().map(|f| f.path()).collect();
+        let log = std::fs::read_to_string(&logs[0]).unwrap();
+        assert!(log.contains("mcp.example.test/mcp?token=") && !log.contains("plainsecretvalue42"), "a key in an argument is hidden: {log}");
         let remote = McpPlugin { url: Some("http://127.0.0.1:0/mcp".into()), ..plugin("") };
         let other = tempfile::tempdir().unwrap();
         assert!(refresh(&remote, other.path()).is_err());
