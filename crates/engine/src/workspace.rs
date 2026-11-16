@@ -80,10 +80,10 @@ fn copy_tree(from: &Path, to: &Path, skip: &dyn Fn(&Path) -> bool, depth: usize)
 }
 
 /// The current `craft.json` format version. Bumping it means appending a step to [`MANIFEST_STEPS`].
-pub const MANIFEST_VERSION: u32 = 4;
+pub const MANIFEST_VERSION: u32 = 5;
 
 /// The steps that bring an older `craft.json` forward; step `i` goes from version `i` to `i + 1`.
-const MANIFEST_STEPS: &[versioned::Step<Value>] = &[manifest_v0_to_v1, manifest_v1_to_v2, manifest_v2_to_v3, manifest_v3_to_v4];
+const MANIFEST_STEPS: &[versioned::Step<Value>] = &[manifest_v0_to_v1, manifest_v1_to_v2, manifest_v2_to_v3, manifest_v3_to_v4, manifest_v4_to_v5];
 const _: () = assert!(MANIFEST_STEPS.len() == MANIFEST_VERSION as usize, "one step per craft.json version");
 
 /// Version 0 (no `version` field) has the same shape as version 1; only the number is new.
@@ -113,6 +113,17 @@ fn manifest_v3_to_v4(doc: &mut Value) -> Result<(), String> {
     let has_session = obj.get("agent_session").and_then(Value::as_str).is_some_and(|s| !s.is_empty());
     if has_session && !obj.contains_key("agent_session_deep") {
         obj.insert("agent_session_deep".into(), Value::Bool(true));
+    }
+    Ok(())
+}
+
+/// Version 5 adds the mode the current `capture/` was studied in (`capture_deep`). A version-4
+/// manifest predates the field; a capture it left is the legacy case this build treats as Deep,
+/// so the step fills `true` for it. A mode an early build of this change already wrote is kept.
+fn manifest_v4_to_v5(doc: &mut Value) -> Result<(), String> {
+    let obj = doc.as_object_mut().ok_or("the manifest isn't a JSON object")?;
+    if !obj.contains_key("capture_deep") {
+        obj.insert("capture_deep".into(), Value::Bool(true));
     }
     Ok(())
 }
@@ -410,6 +421,10 @@ pub struct Manifest {
     /// kept, so it is only resumed in Deep (it may have read the original there).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_session_deep: Option<bool>,
+    /// The mode the current `capture/` was studied in (`true`: Deep); none: no study by this
+    /// build recorded it (a failed study, or a capture copied in), so a run studies again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_deep: Option<bool>,
     /// Kinds of agent action the person allowed for this workspace ("bash:npm", "web_fetch"…).
     #[serde(default)]
     pub allowed_actions: Vec<String>,
@@ -488,6 +503,7 @@ impl Manifest {
             agent_session: None,
             agent_session_by: None,
             agent_session_deep: None,
+            capture_deep: None,
             allowed_actions: Vec::new(),
             last_reply: String::new(),
             asset_budget_usd: ASSET_BUDGET_USD,
@@ -561,6 +577,8 @@ pub struct ProjectUsage {
     pub work_ms: u64,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// At least one turn didn't report tokens. The counts only include reported usage.
+    pub tokens_incomplete: bool,
     /// Everything reported, in US dollars: what API keys were charged plus coding agents' own
     /// estimates at API prices.
     pub cost_usd: f64,
@@ -626,7 +644,7 @@ impl ProjectUsage {
     }
 
     pub fn used_anything(&self) -> bool {
-        self.tokens() > 0 || self.priced
+        self.tokens() > 0 || self.tokens_incomplete || self.priced
     }
 }
 
@@ -634,6 +652,12 @@ impl ProjectUsage {
 pub struct Workspace {
     pub root: PathBuf,
     pub manifest: Manifest,
+}
+
+/// The absolute form of a project path, for a child that changes into the project folder. An
+/// already-absolute path is kept; one that can't be made absolute is returned unchanged.
+pub fn absolute(path: &Path) -> PathBuf {
+    std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// A folder-name slug: lower-case words joined by dashes, at most 40 characters.
@@ -944,10 +968,10 @@ impl Workspace {
     pub fn inbox_dir(&self) -> PathBuf {
         self.root.join("inbox")
     }
-    /// A builder has worked on this project and its conversation was kept, so a later run carries
-    /// it on instead of starting over.
-    pub fn builder_started(&self) -> bool {
-        self.manifest.agent_session.is_some() || self.transcript_path().is_file()
+    /// A coding agent's session saved for this project in `deep` mode. A session saved before the
+    /// mode was kept counts as Deep, since it may have read inside the original.
+    pub fn builder_session_in(&self, deep: bool) -> bool {
+        self.manifest.agent_session.as_ref().is_some_and(|_| self.manifest.agent_session_deep.unwrap_or(true) == deep)
     }
 
     /// The API builder's conversation, kept so a follow-up continues it (`ai::context`).
@@ -1673,6 +1697,7 @@ mod tests {
         let ws = Workspace::open(dir.path()).unwrap();
         assert_eq!(ws.manifest.version, MANIFEST_VERSION);
         assert_eq!(ws.manifest.agent_session_deep, Some(true), "a session from before the mode was kept counts as Deep");
+        assert_eq!(ws.manifest.capture_deep, Some(true), "a capture from before the mode was kept counts as Deep");
         assert_eq!(ws.manifest.agent_session_for_mode("claude-code", false), None);
         assert_eq!(ws.manifest.status, Status::Ready);
         assert_eq!(ws.manifest.asset_budget_usd, ASSET_BUDGET_USD);
@@ -1905,6 +1930,29 @@ mod tests {
         assert_session_migrated(&recorded, Some(false));
     }
 
+    /// R2.9: version 4 predates the capture's mode. A capture it left is recorded as Deep (the
+    /// legacy case), and a mode an early build of the change already wrote is kept.
+    #[test]
+    fn a_version_4_capture_mode_is_kept_and_an_older_one_migrates_as_deep() {
+        let v4 = MANIFEST_V0.replacen('{', r#"{ "version": 4,"#, 1);
+        assert_eq!(read_manifest(v4.as_bytes()).unwrap().capture_deep, Some(true), "a capture from before the field counts as Deep");
+        let recorded = v4.replace(r#""agent_session": "abc","#, r#""agent_session": "abc", "capture_deep": false,"#);
+        assert_eq!(read_manifest(recorded.as_bytes()).unwrap().capture_deep, Some(false), "a recorded mode is kept");
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(MANIFEST), &v4).unwrap();
+        let mut ws = Workspace::open(dir.path()).unwrap();
+        assert_eq!((ws.manifest.version, ws.manifest.capture_deep), (MANIFEST_VERSION, Some(true)));
+        ws.save().unwrap();
+        let saved: Value = serde_json::from_slice(&std::fs::read(dir.path().join(MANIFEST)).unwrap()).unwrap();
+        assert_eq!(saved["version"], MANIFEST_VERSION);
+        assert_eq!(saved["capture_deep"], true, "the legacy capture is recorded as Deep");
+        ws.manifest.capture_deep = Some(false);
+        ws.save().unwrap();
+        let saved: Value = serde_json::from_slice(&std::fs::read(dir.path().join(MANIFEST)).unwrap()).unwrap();
+        assert_eq!(saved["capture_deep"], false);
+    }
+
     /// Read a literal `craft.json` sample, check both modes and the saved document.
     fn assert_session_migrated(doc: &str, want: Option<bool>) {
         let dir = tempfile::tempdir().unwrap();
@@ -1941,6 +1989,21 @@ mod tests {
         let text = serde_json::to_string(&m).unwrap();
         let back: Manifest = serde_json::from_str(&text).unwrap();
         assert_eq!((back.agent_session_by.as_deref(), back.agent_session_deep), (Some("claude-code"), None));
+    }
+
+    /// A saved session is history only in the mode it ran in; one from before the mode was kept
+    /// counts as Deep.
+    #[test]
+    fn a_saved_session_counts_as_history_only_in_its_mode() {
+        let d = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::create(d.path(), "x", "A thing", TargetRef::None).unwrap();
+        assert!(!ws.builder_session_in(true) && !ws.builder_session_in(false), "nothing saved yet");
+        ws.manifest.agent_session = Some("s1".into());
+        assert!(ws.builder_session_in(true), "one saved before the mode was kept counts as Deep");
+        assert!(!ws.builder_session_in(false), "Deep may have read the original");
+        ws.manifest.agent_session_deep = Some(false);
+        assert!(!ws.builder_session_in(true));
+        assert!(ws.builder_session_in(false));
     }
 
     /// A rename survives a stale save, a copy takes the build but not the conversation (nor its
