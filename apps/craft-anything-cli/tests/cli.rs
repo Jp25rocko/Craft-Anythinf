@@ -87,6 +87,36 @@ fn ai_request_rate_reads_changes_and_clears_an_api_backends_limit() {
     assert!(!std::fs::read_to_string(config.path().join("config.toml")).unwrap().contains("requests_per_minute"));
 }
 
+/// R5.4: an API backend's tool list is shown beside what Auto works out to there, changed, and
+/// cleared back to Auto; agent apps and unknown lists are refused.
+#[test]
+fn ai_tools_reads_changes_and_clears_an_api_backends_tool_list() {
+    let config = tempfile::tempdir().unwrap();
+    let run = |args: &[&str]| cli(args, config.path());
+    assert!(run(&["ai", "add", "Local", "--kind", "openai_compatible", "--model", "test"]).success);
+    assert!(run(&["ai", "add", "Paid", "--kind", "anthropic", "--model", "test"]).success);
+    assert!(run(&["ai", "add", "Claude Code", "--kind", "agent_cli", "--model", "claude-code"]).success);
+    let read = |name: &str| {
+        let output = run(&["ai", "tools", name, "--format", "json"]);
+        assert!(output.success, "{}", String::from_utf8_lossy(&output.stdout));
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let local = read("Local");
+    assert_eq!(local["tools"], "auto");
+    assert!(local["auto"].as_str().unwrap().contains("64k"), "a local model's Auto depends on its window: {local}");
+    assert_eq!(read("Paid")["auto"], "full", "a paid service always gets every tool");
+    assert!(run(&["ai", "tools", "Local", "full"]).success);
+    assert_eq!(read("Local")["tools"], "full");
+    assert!(std::fs::read_to_string(config.path().join("config.toml")).unwrap().contains("tools = \"full\""));
+    assert!(!run(&["ai", "tools", "Local", "some"]).success);
+    assert!(!run(&["ai", "tools", "Claude Code", "lean"]).success);
+    assert!(!run(&["ai", "tools", "Unknown", "lean"]).success);
+    assert_eq!(read("Local")["tools"], "full");
+    assert!(run(&["ai", "tools", "Local", "auto"]).success);
+    assert_eq!(read("Local")["tools"], "auto");
+    assert!(!std::fs::read_to_string(config.path().join("config.toml")).unwrap().contains("tools ="), "Auto is saved as no setting");
+}
+
 /// #1358: the saved key can be reported, replaced and forgotten headlessly, and is never printed.
 #[test]
 fn ai_key_reports_replaces_and_forgets_without_printing_the_key() {
