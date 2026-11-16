@@ -912,6 +912,12 @@ stored credentials, check every mode that admits it, and give the narrower mode 
 The same profile copy also carried the browser's saved-password store: "we never store a
 password" has to cover what the browser itself offers to keep.
 
+**A key stored without asking whose it is.** A pasted key was saved as it was typed, so an OpenAI
+key (which also starts `sk-`) went into an OpenRouter backend and the only complaint was OpenRouter's
+401 at the first build, hours later. Check a key's shape against its backend kind as it's saved, name
+the provider it looks like, and say where to copy the right one; leave a backend with an address of
+its own alone, since a proxy may use keys of its own shape.
+
 **A secret check that matched a word inside a name.** `cargo xtask secrets` took any variable
 with `AUTH` in its name as a secret; git sets `GIT_AUTHOR_NAME` while the hook runs, so a contributor
 whose git name is their handle couldn't commit their own roadmap claim. Name the exceptions

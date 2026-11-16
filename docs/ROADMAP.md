@@ -646,6 +646,11 @@ Owner: open · Status: todo
       the `gemini` backend kind uses Gemini's OpenAI-compatible endpoint and `GEMINI_API_KEY`
 - [ ] Check a Gemini build live with a real Google AI Studio key (tool calls through the
       OpenAI-compatible endpoint)
+- [x] A key for another provider is refused as the backend is added instead of being stored and
+      failing later as a bare 401: OpenRouter's start `sk-or-`, Anthropic's `sk-ant-`, OpenAI's
+      `sk-` but neither of those, Gemini's `AIza` (`keys::check_key_shape`), and the error names
+      the provider the key looks like and where to copy the right one. A backend with an address
+      of its own is left alone (a proxy may issue keys of its own shape)
 - [x] Failure logs for API-backend stops, like the ones agent CLIs write to `logs/` in the config
       folder: a failed model turn writes one (`agent::write_failure_log`) and the error names it
 - [x] Failure logs for an MCP server that doesn't start: a local `[[plugins.mcp]]` server that can't

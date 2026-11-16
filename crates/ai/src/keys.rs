@@ -90,6 +90,46 @@ enum KeychainGet {
     Unavailable,
 }
 
+/// Refuse a key that can't be the one `kind` wants, before it is stored: OpenRouter's start
+/// `sk-or-`, Anthropic's `sk-ant-`, and OpenAI's `sk-` but neither of those. Saving the wrong
+/// provider's key used to succeed, so the mistake only showed up later as a bare 401 from the
+/// service (an OpenAI key pasted into an OpenRouter backend). A backend with an address of its own
+/// may be a proxy with keys of its own shape, so only the provider's own address is checked.
+pub fn check_key_shape(kind: BackendKind, base_url: Option<&str>, key: &str) -> Result<(), ToolError> {
+    if base_url.is_some_and(|b| !b.trim().is_empty()) {
+        return Ok(());
+    }
+    let key = key.trim();
+    let (name, prefix, docs) = match kind {
+        BackendKind::Openrouter => ("OpenRouter", "sk-or-", "https://openrouter.ai/keys"),
+        BackendKind::Anthropic => ("Anthropic", "sk-ant-", "https://console.anthropic.com/settings/keys"),
+        BackendKind::Openai => ("OpenAI", "sk-", "https://platform.openai.com/api-keys"),
+        BackendKind::Gemini => ("Gemini", "AIza", "https://aistudio.google.com/apikey"),
+        BackendKind::OpenaiCompatible | BackendKind::AgentCli => return Ok(()),
+    };
+    // OpenAI's prefix is the start of the other two, so only its own keys count as OpenAI's.
+    let right = key.starts_with(prefix) && !(kind == BackendKind::Openai && (key.starts_with("sk-or-") || key.starts_with("sk-ant-")));
+    if right {
+        return Ok(());
+    }
+    let looks_like = if key.starts_with("sk-or-") {
+        Some("an OpenRouter key")
+    } else if key.starts_with("sk-ant-") {
+        Some("an Anthropic key")
+    } else if key.starts_with("sk-") {
+        Some("an OpenAI key")
+    } else if key.starts_with("AIza") {
+        Some("a Gemini API key")
+    } else {
+        None
+    };
+    let message = match looks_like {
+        Some(what) => format!("That's {what}, not an {name} key."),
+        None => format!("That doesn't look like an {name} key."),
+    };
+    Err(ToolError::new(ErrorCode::BadInput, message).with_remediation(format!("{name} keys start with {prefix}: copy one from {docs}.")))
+}
+
 /// Where keys live.
 #[derive(Debug, Clone)]
 pub struct KeyStore {
@@ -464,6 +504,36 @@ mod tests {
         std::fs::write(&file, &valid).unwrap();
         assert_eq!(s.set(FAL_KEY, "sk-test-new").unwrap(), "file");
         assert_eq!((s.get("FakeBackend").as_deref(), s.get(FAL_KEY).as_deref()), (Some("sk-test-backend"), Some("sk-test-new")));
+    }
+
+    #[test]
+    fn a_key_for_another_provider_is_refused_with_what_to_paste() {
+        use BackendKind::{Anthropic, Gemini, Openai, Openrouter};
+        // Each provider's own shape is accepted.
+        for (kind, key) in [(Openrouter, "sk-or-v1-test"), (Anthropic, "sk-ant-test"), (Openai, "sk-test"), (Openai, "sk-proj-test"), (Gemini, "AIza-test")] {
+            assert!(check_key_shape(kind, None, key).is_ok(), "{kind:?} {key}");
+        }
+        // Another provider's key is named, rather than stored and rejected by the service later.
+        for (kind, key, what) in [
+            (Openrouter, "sk-proj-test", "That's an OpenAI key, not an OpenRouter key."),
+            (Openrouter, "sk-ant-test", "That's an Anthropic key, not an OpenRouter key."),
+            (Openrouter, "AIza-test", "That's a Gemini API key, not an OpenRouter key."),
+            (Anthropic, "sk-or-v1-test", "That's an OpenRouter key, not an Anthropic key."),
+            (Openai, "sk-or-v1-test", "That's an OpenRouter key, not an OpenAI key."),
+            (Openai, "sk-ant-test", "That's an Anthropic key, not an OpenAI key."),
+        ] {
+            let e = check_key_shape(kind, None, key).unwrap_err();
+            assert_eq!((e.code, e.message.as_str()), (ErrorCode::BadInput, what), "{kind:?} {key}");
+            assert!(e.remediation.unwrap_or_default().contains("copy one from"), "{key}");
+        }
+        // Not a key at all.
+        let e = check_key_shape(Openrouter, None, "hello").unwrap_err();
+        assert!(e.message.contains("doesn't look like an OpenRouter key"), "{}", e.message);
+        // An address of its own may be a proxy that issues keys of its own shape.
+        assert!(check_key_shape(Openrouter, Some("http://127.0.0.1:8080/v1"), "proxy-key").is_ok());
+        // A local server and an agent CLI don't ask for a key of any shape.
+        assert!(check_key_shape(BackendKind::OpenaiCompatible, None, "anything").is_ok());
+        assert!(check_key_shape(BackendKind::AgentCli, None, "anything").is_ok());
     }
 
     #[test]

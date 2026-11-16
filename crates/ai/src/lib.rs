@@ -656,6 +656,9 @@ impl AiHub {
         }
         let mut cfg = self.config_to_change()?;
         if let Some(k) = key.filter(|k| !k.trim().is_empty()) {
+            // A key for another provider is refused here, with what to paste instead, rather than
+            // stored and rejected by the service later.
+            keys::check_key_shape(entry.config.kind, entry.config.base_url.as_deref(), &k)?;
             self.keys.set(&entry.config.name, k.trim())?;
         }
         cfg.upsert(entry);

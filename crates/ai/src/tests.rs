@@ -531,6 +531,22 @@ input_per_mtok = 1.0
     assert!(h.keys.get("Other").is_none(), "a refused add stored its key");
 }
 
+/// A wrong provider's key is refused as the backend is added: it used to be stored as-is, so an
+/// OpenAI key in an OpenRouter backend only showed up as OpenRouter's 401 at the first build.
+#[test]
+fn a_key_for_another_provider_is_refused_when_a_backend_is_added() {
+    let (h, _d) = hub();
+    let cfg = |kind| BackendConfig { name: "Kimi".into(), kind, model: "m".into(), base_url: None, ssh_host: None, enabled: true };
+    let e = h.add_backend(cfg(BackendKind::Openrouter), Some("sk-proj-openai-test".into())).unwrap_err();
+    assert_eq!(e.code, ErrorCode::BadInput, "{e:?}");
+    assert!(e.message.contains("an OpenAI key") && e.message.contains("an OpenRouter key"), "{}", e.message);
+    assert!(h.keys.get("Kimi").is_none(), "the wrong key was stored");
+    assert!(h.backends().is_empty(), "the backend was added anyway");
+    // The right one goes through.
+    h.add_backend(cfg(BackendKind::Openrouter), Some("sk-or-v1-test".into())).unwrap();
+    assert_eq!(h.keys.get("Kimi").as_deref(), Some("sk-or-v1-test"));
+}
+
 #[test]
 fn the_person_chooses_who_builds() {
     let (h, _d) = hub();
