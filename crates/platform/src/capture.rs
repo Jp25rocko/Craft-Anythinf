@@ -857,9 +857,12 @@ mod unix {
         let started_at = now_unix_ms();
         let exe_sha = super::hash_file(std::path::Path::new(&spec.executable));
 
-        // Sandbox discovery. A helper another local account could have replaced is not run.
-        let found = crate::which::which("bwrap");
-        let bwrap = found.clone().filter(|p| crate::which::is_trusted_helper(p));
+        // Sandbox discovery. A helper another local account could have replaced is not run. Made
+        // absolute first: the trust check reads a relative PATH entry against this working folder,
+        // while the program would be started with `spec.cwd`, and it must be the same file. What
+        // is kept is the file the check trusted, symlinks followed, so that is what runs.
+        let found = crate::which::which("bwrap").map(|p| std::path::absolute(&p).unwrap_or(p));
+        let bwrap = found.clone().and_then(|p| crate::which::trusted_helper(&p));
         let (sandbox, program, pre_args) = match spec.sandbox {
             SandboxRequest::Off => (
                 Sandbox { available: bwrap.is_some(), used: false, kind: "none", reason: Some("sandbox not requested".into()) },
@@ -882,7 +885,7 @@ mod unix {
                         kind: "none",
                         reason: Some(match &found {
                             Some(path) => format!(
-                                "bubblewrap ({}) is writable by a group or other users, so it isn't trusted as a sandbox",
+                                "bubblewrap ({}) could be replaced by another user, so it isn't trusted as a sandbox",
                                 path.display()
                             ),
                             None => "bubblewrap (bwrap) is not installed".into(),

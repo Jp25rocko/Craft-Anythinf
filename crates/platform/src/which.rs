@@ -399,13 +399,63 @@ fn is_executable(p: &Path) -> bool {
     p.is_file()
 }
 
-/// Whether `path` is a helper another local account could have replaced: executable, and not
-/// writable by a group or anyone else (Unix). A `bwrap` planted in a world-writable folder is
-/// not used as a sandbox, since it would run in our place.
+/// Whether `path` is a helper another local account could have replaced: executable, owned by
+/// root or by the account whose folder holds it, and named through folders only root or that
+/// account could have put an entry in (Unix). A `bwrap` planted in a folder anyone can write, or
+/// one another account owns, is not used as a sandbox: it would run in our place.
+///
+/// `path` must be absolute: a relative one is resolved against whatever working folder the
+/// program is started in, which need not be the one this check reads it against.
 #[cfg(unix)]
 pub fn is_trusted_helper(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt as _;
-    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0 && m.permissions().mode() & 0o022 == 0)
+    trusted_helper(path).is_some()
+}
+
+/// The file [`is_trusted_helper`] trusts `path` to be, symlinks followed: what is to be run, so
+/// that the check and the run name the same file even after a link is changed.
+#[cfg(unix)]
+pub fn trusted_helper(path: &Path) -> Option<PathBuf> {
+    if !path.is_absolute() {
+        return None;
+    }
+    // A link is how the helper was found, not where it is: one of ours to a file root owns (as
+    // `~/.local/bin/bwrap -> /usr/bin/bwrap` and a Nix profile's are) is trusted by what it names.
+    let real = std::fs::canonicalize(path).ok()?;
+    helper_in_place(&real).then_some(real)
+}
+
+/// Whether the file `path` and every folder above it are root's or one account's own, and nobody
+/// else can write them: a folder's owner can rename or remove what it holds, and one another
+/// account can write can have an entry put in it. The file must be root's or the folder's owner's:
+/// a 0755 file of another account's in a folder root owns is one that account can change.
+#[cfg(unix)]
+fn helper_in_place(path: &Path) -> bool {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    let Ok(meta) = std::fs::metadata(path) else { return false };
+    let mode = meta.permissions().mode();
+    if !meta.is_file() || mode & 0o111 == 0 || mode & 0o022 != 0 {
+        return false;
+    }
+    let owner = meta.uid();
+    let Some(folder) = path.parent().and_then(|d| std::fs::metadata(d).ok()) else { return false };
+    if owner != 0 && folder.uid() != owner {
+        return false;
+    }
+    let mut dir = path.parent();
+    while let Some(d) = dir {
+        let Ok(m) = std::fs::metadata(d) else { return false };
+        if m.uid() != 0 && m.uid() != owner {
+            return false;
+        }
+        // A sticky folder may be writable by everyone (like /tmp): only an entry's owner can
+        // rename or remove it there.
+        let mode = m.permissions().mode();
+        if mode & 0o022 != 0 && mode & 0o1000 == 0 {
+            return false;
+        }
+        dir = d.parent();
+    }
+    true
 }
 
 /// Windows has no group/other permission bits; an existing file is the most this can check.
@@ -506,13 +556,25 @@ mod tests {
         }
     }
 
+    /// A folder under `/tmp`, whose own chain is root's and sticky: the tests that expect a helper
+    /// to be trusted need one, whatever this machine's `TMPDIR` is (a group-writable checkout or
+    /// temp folder is not a place a helper could be trusted from, which the tests below cover).
+    #[cfg(unix)]
+    fn safe_tempdir() -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::Builder::new().prefix("craft-helper-").tempdir_in("/tmp").unwrap();
+        // A umask of 002 makes folders group-writable, which is no place to trust a helper from.
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        dir
+    }
+
     /// A file another local account could have replaced is not run as a helper: it would run
     /// inside our process tree in our place, so a `bwrap` in a world-writable folder is skipped.
     #[cfg(unix)]
     #[test]
     fn a_helper_another_local_account_could_write_is_not_trusted() {
         use std::os::unix::fs::PermissionsExt as _;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = safe_tempdir();
         let helper = dir.path().join("bwrap");
         std::fs::write(&helper, "#!/bin/sh\n").unwrap();
         let mode = |m: u32| std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(m)).unwrap();
@@ -525,6 +587,44 @@ mod tests {
         mode(0o644);
         assert!(!is_trusted_helper(&helper), "not executable");
         assert!(!is_trusted_helper(&dir.path().join("missing")));
+        // What runs is resolved against the program's working folder, not this one: a relative
+        // path is no helper whatever file it names here.
+        assert!(!is_trusted_helper(Path::new("bwrap")), "a relative name");
+        assert!(!is_trusted_helper(Path::new("target/debug/bwrap")), "a relative path");
+    }
+
+    /// A file of ours in a folder another account can write is as good as one of theirs: the check
+    /// follows symlinks and reads every folder above the helper, not only its own mode bits.
+    #[cfg(unix)]
+    #[test]
+    fn a_helper_in_a_folder_another_account_could_write_is_not_trusted() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = safe_tempdir();
+        let shared = dir.path().join("shared");
+        std::fs::create_dir(&shared).unwrap();
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let helper = shared.join("bwrap");
+        std::fs::write(&helper, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(!is_trusted_helper(&helper), "a folder anyone can write holds it");
+        // A link of ours to it in a folder of ours is no better: what runs is the file it names.
+        let link = dir.path().join("bwrap-link");
+        std::os::unix::fs::symlink(&helper, &link).unwrap();
+        assert!(!is_trusted_helper(&link), "a link into a folder anyone can write");
+        // A link to a helper in a folder of ours is trusted by the file it names, and it is that
+        // file that runs: an install that links its own `bwrap` to one elsewhere is no helper of
+        // another account's (a system one is root's, and passes as this one does).
+        let ours = safe_tempdir();
+        let target = ours.path().join("bwrap");
+        std::fs::write(&target, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let to_target = dir.path().join("bwrap-elsewhere");
+        std::os::unix::fs::symlink(&target, &to_target).unwrap();
+        assert_eq!(trusted_helper(&to_target), std::fs::canonicalize(&target).ok(), "a link to a trusted file");
+        // The sticky bit lets everyone write a folder without letting anyone but an entry's owner
+        // rename it (`/tmp`): the helper is ours, so it stays trusted.
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o1777)).unwrap();
+        assert!(is_trusted_helper(&helper), "a sticky folder only an entry's owner can change");
     }
 
     #[test]
