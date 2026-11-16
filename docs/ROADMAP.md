@@ -643,6 +643,9 @@ Owner: open · Status: todo
 - [x] Failure logs for an MCP server that doesn't start: a local `[[plugins.mcp]]` server that can't
       start, exits or doesn't answer writes one to `logs/` (what ran, its exit code and stderr, never
       its `env`) and the error names it; an exit says what it printed. A remote server gets none
+- [x] Review of #1921: a key in a plugin's arguments (`?token=…`) is hidden in its log, a server that
+      stops answering is stopped and its error and log keep what it printed, and a failed write waits
+      a moment for the exit. The wait after a failed write has no test of its own (it's a race)
 - [x] Settings → AI can replace or forget an API backend's saved key, so a key rotated in the
       environment isn't hidden behind an older saved one (#1358); `ai key <name>` shows, replaces
       or forgets it headlessly, and never prints it
