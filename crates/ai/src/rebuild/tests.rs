@@ -719,7 +719,14 @@ mod typed_retries {
             } else {
                 AgentEvent::TextDelta { text: "Done".into() }
             });
-            self.queued.push(AgentEvent::TurnDone { backend: "scripted".into(), input_tokens: 0, output_tokens: 0, cost_usd: None, cost_is_estimate: false });
+            self.queued.push(AgentEvent::TurnDone {
+                backend: "scripted".into(),
+                input_tokens: 0,
+                output_tokens: 0,
+                tokens_unknown: false,
+                cost_usd: None,
+                cost_is_estimate: false,
+            });
         }
         fn session_id(&self) -> Option<String> {
             self.session.clone()
@@ -863,7 +870,14 @@ mod typed_retries {
                 vec![if std::mem::take(&mut self.first_poll) {
                     AgentEvent::Error { message: "The provider is rate limited.".into(), remediation: None, log: None }
                 } else {
-                    AgentEvent::TurnDone { backend: "scripted".into(), input_tokens: 0, output_tokens: 0, cost_usd: None, cost_is_estimate: false }
+                    AgentEvent::TurnDone {
+                        backend: "scripted".into(),
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        tokens_unknown: false,
+                        cost_usd: None,
+                        cost_is_estimate: false,
+                    }
                 }]
             }
             fn last_failure(&self) -> Option<TurnFailure> {
@@ -923,7 +937,15 @@ mod typed_retries {
             }
             script.turns.push_back(Err(ToolError::new(ErrorCode::OverLimit, "服务限流").with_details(json!({"status":429,"retry_after_secs":3}))));
             script.turns.push_back(turn(vec![Block::Text { text: "Built the notes app".into() }], StopReason::EndTurn));
-            let slot = ModelSlot { name: "Scripted".into(), model: Box::new(script), local: false, effort: None, max_turns: 10, context_tokens: 0 };
+            let slot = ModelSlot {
+                name: "Scripted".into(),
+                model: Box::new(script),
+                local: false,
+                effort: None,
+                max_turns: 10,
+                context_tokens: 0,
+                tools: Default::default(),
+            };
             let enabled = std::collections::BTreeSet::from([craft_anything_engine::Toolset::Core, craft_anything_engine::Toolset::Build]);
             let mut api = ApiConversation::start_with(Arc::new(EngineHost(worker.engine.clone())), vec![slot], LoopConfig::default(), enabled).unwrap();
             let mut waits = Vec::new();
@@ -1071,7 +1093,8 @@ mod typed_retries {
             "opencode",
             concat!(
                 "#!/bin/sh\nif [ \"$2\" = '--help' ]; then printf '%s\\n' '--format --standalone'; exit 0; fi\n",
-                "for arg do last=\"$arg\"; done\nprintf '%s\\n' \"$last\" >> prompts\n",
+                // The message comes on stdin.
+                "cat >> prompts; printf '\\n' >> prompts\n",
                 "if [ ! -f rate-was-returned ]; then touch rate-was-returned\n",
                 "printf '%s\\n' '{\"type\":\"error\",\"error\":{\"name\":\"APIError\",\"data\":{\"message\":\"Please retry in 19.052906498s.\",\"statusCode\":429,\"isRetryable\":true}}}'\nexit 1\nfi\n",
                 "printf '%s\\n' '{\"type\":\"text\",\"part\":{\"text\":\"Built the app\"}}'\n"
@@ -1284,6 +1307,21 @@ fn a_registered_kind_is_chosen_from_its_words_and_brings_its_checks() {
     assert!(b.contains("What to build: a slide deck."), "{b}");
 }
 
+/// An OpenCode builder kept its own progress notes in inbox/build-progress.json, which stopped every
+/// run after it: every brief names Craft Anything's records, by the names the workspace uses.
+#[test]
+fn every_brief_names_the_records_a_builder_must_not_write() {
+    use craft_anything_engine::workspace::{MANIFEST, OWN_NAMES, progress::BUILD_PROGRESS_FILE};
+    let d = tempfile::tempdir().unwrap();
+    for k in ["app", "game", "website"] {
+        let ws = Workspace::create(d.path(), k, "A thing", TargetRef::None).unwrap();
+        let b = brief(&ws, k, false, false, None, false, None);
+        let records = format!("Craft Anything's own records there ({MANIFEST}, {}, everything in inbox/)", craft_anything_engine::feed::FEED_FILE);
+        assert!(b.contains(&records), "{k}: {b}");
+    }
+    assert!(BUILD_PROGRESS_FILE.starts_with("inbox/") && OWN_NAMES.contains(&"inbox"), "the brief's inbox/ is where the record is");
+}
+
 #[test]
 fn the_brief_puts_the_request_before_the_default_stack() {
     let d = tempfile::tempdir().unwrap();
@@ -1410,7 +1448,8 @@ fn an_api_backend_builds_with_the_build_tools() {
         ]),
         seen: Arc::default(),
     };
-    let slot = ModelSlot { name: "Scripted".into(), model: Box::new(script), local: false, effort: None, max_turns: 10, context_tokens: 0 };
+    let slot =
+        ModelSlot { name: "Scripted".into(), model: Box::new(script), local: false, effort: None, max_turns: 10, context_tokens: 0, tools: Default::default() };
     let enabled = std::collections::BTreeSet::from([craft_anything_engine::Toolset::Core, craft_anything_engine::Toolset::Build]);
     let mut api = ApiConversation::start_with(Arc::new(EngineHost(engine)), vec![slot], LoopConfig::default(), enabled).unwrap();
     let reply = w.turn(&mut ws, &mut api, "Build it.", true, None).unwrap();
@@ -1451,7 +1490,8 @@ fn other_pages_of_the_same_site_are_picked_from_its_links() {
     let d = tempfile::tempdir().unwrap();
     let ws = Workspace::create(d.path(), "Shop", "Clone it", TargetRef::Website { url: "https://shop.example.com/".into() }).unwrap();
     let cx = |ws| BriefCx { ws, deep: false, ghidra: false, editor: None, assets: false, image_model: None, sees_pictures: true };
-    assert!(kinds::WebsiteKind.brief_sections(&cx(&ws)).is_empty());
+    // #1590: and it always says how to run the site without Craft Anything.
+    assert_eq!(kinds::WebsiteKind.brief_sections(&cx(&ws)), [kinds::website::HOW_TO_RUN]);
     std::fs::create_dir_all(ws.capture_dir()).unwrap();
     std::fs::write(ws.capture_dir().join(ROUTES_FILE), serde_json::to_vec(&r).unwrap()).unwrap();
     assert_eq!(routes(&ws).len(), 4);
@@ -2200,7 +2240,15 @@ mod picking_up_a_build {
             seen: Arc::clone(&seen),
         };
         let mut worker = check_worker(&ws, false);
-        let slot = ModelSlot { name: "Scripted".into(), model: Box::new(script), local: true, effort: None, max_turns: 10, context_tokens: 0 };
+        let slot = ModelSlot {
+            name: "Scripted".into(),
+            model: Box::new(script),
+            local: true,
+            effort: None,
+            max_turns: 10,
+            context_tokens: 0,
+            tools: Default::default(),
+        };
         let api = ApiConversation::start(Arc::new(EngineHost(worker.engine.clone())), vec![slot], LoopConfig::default()).unwrap();
         let entry = crate::BackendEntry {
             config: crate::BackendConfig {
@@ -2311,7 +2359,15 @@ mod picking_up_a_build {
                     dir: notes::notes_dir(&ws.inbox_dir()),
                     text,
                 };
-                let slot = ModelSlot { name: "Scripted".into(), model: Box::new(model), local: true, effort: None, max_turns: 10, context_tokens: 0 };
+                let slot = ModelSlot {
+                    name: "Scripted".into(),
+                    model: Box::new(model),
+                    local: true,
+                    effort: None,
+                    max_turns: 10,
+                    context_tokens: 0,
+                    tools: Default::default(),
+                };
                 let api = ApiConversation::start(Arc::new(EngineHost(worker.engine.clone())), vec![slot], LoopConfig::default()).unwrap();
                 let entry = crate::BackendEntry {
                     config: crate::BackendConfig {
@@ -3385,7 +3441,14 @@ impl Conversation for ChecksItsWork {
             Some(text) => {
                 vec![
                     AgentEvent::TextDelta { text },
-                    AgentEvent::TurnDone { backend: "test".into(), input_tokens: 0, output_tokens: 0, cost_usd: None, cost_is_estimate: false },
+                    AgentEvent::TurnDone {
+                        backend: "test".into(),
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        tokens_unknown: false,
+                        cost_usd: None,
+                        cost_is_estimate: false,
+                    },
                 ]
             }
             None => Vec::new(),
@@ -3525,7 +3588,7 @@ impl Conversation for Decompiles {
         self.events = vec![
             AgentEvent::ToolStarted { call_id: "1".into(), tool, input: json!({"function": "entry"}) },
             AgentEvent::TextDelta { text: "Read it.".into() },
-            AgentEvent::TurnDone { backend: "test".into(), input_tokens: 0, output_tokens: 0, cost_usd: None, cost_is_estimate: false },
+            AgentEvent::TurnDone { backend: "test".into(), input_tokens: 0, output_tokens: 0, tokens_unknown: false, cost_usd: None, cost_is_estimate: false },
         ];
     }
     fn poll(&mut self) -> Vec<AgentEvent> {
@@ -4010,6 +4073,9 @@ fn a_persons_own_project_is_asked_for_nothing_it_would_add_for_our_sake() {
         assert!(!b.contains("--screenshot") && !b.contains("--self-test") && !b.contains("MECHANICS.md"), "{k}: {b}");
         assert!(b.contains("its own build and tests") && !b.contains(kind(k).goal()), "{k}: {b}");
     }
+    let (_d, site) = own_folder("index.html", Edit);
+    let b = brief(&site, "website", false, false, None, false, None);
+    assert!(!b.contains(kinds::website::HOW_TO_RUN), "their own site keeps its own README: {b}");
     own.manifest.stack = "Unity".into();
     let b = brief(&own, "game", false, false, Some(Path::new("/x/Unity")), false, None);
     assert!(!b.contains("CraftBuild") && b.contains("keep to what the project already uses") && b.contains("/x/Unity"), "{b}");
@@ -4019,6 +4085,42 @@ fn a_persons_own_project_is_asked_for_nothing_it_would_add_for_our_sake() {
     let (_d, beside) = own_folder("main.py", StartFrom);
     let b = brief(&beside, "app", false, false, None, false, None);
     assert!(b.contains("--screenshot") && !b.contains("its own build and tests"), "a new app beside the files proves itself: {b}");
+}
+
+/// A website capture that kept the original's network traffic tells the builder it can serve a
+/// stand-in backend from it; one without a recording says nothing about it.
+#[test]
+fn a_website_brief_offers_a_stand_in_backend_only_when_the_capture_has_a_recording() {
+    let d = tempfile::tempdir().unwrap();
+    let ws = Workspace::create(d.path(), "Site", "Rebuild this", TargetRef::Website { url: "https://example.com".into() }).unwrap();
+    let capture = ws.root.join("capture");
+    std::fs::create_dir_all(&capture).unwrap();
+    let without = brief(&ws, "website", true, false, None, false, None);
+    assert!(!without.contains("web_standin_build"), "no recording, no stand-in: {without}");
+    // The recording the study writes, written by the same function it calls.
+    let requests = [json!({"method": "GET", "url": "https://api.example.test/v1/items/42", "status": 200, "mime_type": "application/json",
+        "response_body": {"state": "captured", "bytes": 11, "text": "{\"title\":1}"}})];
+    craft_anything_engine::tools::browser_tools::write_recording(&requests, &capture.join(crate::rebuild::study::RECORDING)).unwrap();
+    let with = brief(&ws, "website", true, false, None, false, None);
+    assert!(with.contains("web_standin_build") && with.contains("web_standin_start"), "{with}");
+    // Clean room reads nothing inside the original, so its brief never offers it.
+    let clean = brief(&ws, "website", false, false, None, false, None);
+    assert!(!clean.contains("web_standin"), "{clean}");
+    // A recording elsewhere in the project isn't one the capture kept.
+    std::fs::remove_file(capture.join(crate::rebuild::study::RECORDING)).unwrap();
+    std::fs::write(ws.root.join("other.har"), "{}").unwrap();
+    assert!(!brief(&ws, "website", true, false, None, false, None).contains("web_standin_build"));
+}
+
+/// #1838: the recording step the study runs reads as the tool's own params, `kind` and all, so it
+/// reaches the walkthrough rather than the error notes.
+#[test]
+fn the_studys_recording_step_reads_as_the_tools_params() {
+    let params = crate::rebuild::study::recording_params("https://example.test/start");
+    let parsed: craft_anything_engine::tools::browser_tools::WalkthroughParams =
+        serde_json::from_value(params.clone()).unwrap_or_else(|e| panic!("the study's own params are refused: {e}: {params}"));
+    assert_eq!(parsed.actions.len(), 1);
+    assert!(parsed.keep_bodies.response_body && parsed.keep_bodies.request_body, "a stand-in needs both bodies");
 }
 
 #[test]
@@ -4350,21 +4452,21 @@ fn a_sign_in_that_stopped_working_is_called_that() {
     assert_eq!(not_signed_in("claude-code", true), "Claude Code's sign-in on this computer has expired or was signed out.");
 }
 
-#[test]
-fn a_build_says_when_it_waits_for_an_analysis_started_earlier() {
-    let d = tempfile::Builder::new().prefix("ca").tempdir().unwrap();
-    let ws = Workspace::create(d.path(), "Game", "Copy this game", TargetRef::None).unwrap();
-    let launcher = d.path().join("analyzeHeadless");
+/// A Deep-mode worker for a project in `d`, whose program another process is already analysing
+/// (a fresh lock beside its saved analysis), so the analysis waits until `limit_secs`.
+fn waiting_for_another_analysis(d: &Path, limit_secs: u64) -> (Worker, std::sync::mpsc::Receiver<RunEvent>, Workspace, PathBuf) {
+    let ws = Workspace::create(d, "Game", "Copy this game", TargetRef::None).unwrap();
+    let launcher = d.join("analyzeHeadless");
     std::fs::write(&launcher, "").unwrap();
-    let program = d.path().join("game.bin");
+    let program = d.join("game.bin");
     std::fs::write(&program, b"not really a program").unwrap();
-    let store = d.path().join("store");
+    let store = d.join("store");
 
     let mut s = craft_anything_engine::testing::session();
     s.settings.deep_mode = true;
     s.settings.engines.store_dir = Some(store.clone());
     s.settings.engines.ghidra.install_dir = Some(launcher);
-    s.settings.engines.ghidra.startup_timeout_secs = Some(3);
+    s.settings.engines.ghidra.startup_timeout_secs = Some(limit_secs);
     let (tx, rx) = std::sync::mpsc::channel();
     let w = Worker {
         wake: Default::default(),
@@ -4391,8 +4493,14 @@ fn a_build_says_when_it_waits_for_an_analysis_started_earlier() {
     let project = craft_anything_engines::ghidra::project_cache_dir(&store, &sha, &digest);
     std::fs::create_dir_all(project.parent().unwrap()).unwrap();
     std::fs::write(project.with_extension("analysing"), "").unwrap();
+    (w, rx, ws, program)
+}
 
-    let done = w.prepare_ghidra(&program).expect("deep mode with Ghidra prepares the analysis");
+#[test]
+fn a_build_says_when_it_waits_for_an_analysis_started_earlier() {
+    let d = tempfile::Builder::new().prefix("ca").tempdir().unwrap();
+    let (w, rx, ws, program) = waiting_for_another_analysis(d.path(), 3);
+    let done = w.prepare_ghidra(&program, &ws.root).expect("deep mode with Ghidra prepares the analysis");
     let _ = done.recv_timeout(Duration::from_secs(30));
     let said: Vec<String> = rx
         .try_iter()
@@ -4402,6 +4510,19 @@ fn a_build_says_when_it_waits_for_an_analysis_started_earlier() {
         })
         .collect();
     assert!(said.iter().any(|t| t.contains("waiting for Ghidra's analysis of this program, started earlier")), "{said:?}");
+}
+
+/// #948: deleting the project ends the analysis its build started, long before its time limit.
+/// Pausing doesn't: the analysis outlives the run so it isn't lost (it waits here, as it would).
+#[test]
+fn deleting_the_project_stops_its_analysis() {
+    let d = tempfile::Builder::new().prefix("ca").tempdir().unwrap();
+    let (w, _rx, ws, program) = waiting_for_another_analysis(d.path(), 600);
+    let done = w.prepare_ghidra(&program, &ws.root).expect("deep mode with Ghidra prepares the analysis");
+    assert!(done.recv_timeout(Duration::from_secs(3)).is_err(), "the analysis goes on while the project is there");
+    ws.delete().unwrap();
+    let ended = done.recv_timeout(Duration::from_secs(20)).expect("deleting the project stopped the analysis");
+    assert!(ended.is_err(), "it stopped, it didn't finish: {ended:?}");
 }
 
 /// A later run skips the study; in Deep mode it opens the program again, so the builder's tool
@@ -4457,5 +4578,45 @@ fn a_later_run_opens_the_projects_program_again_for_the_builder() {
         } else {
             assert!(opened.is_empty(), "Clean room opens nothing");
         }
+    }
+}
+
+/// #1178: both website briefs say the capture is the signed-in view only when the study's
+/// capture.json says it was signed in.
+#[test]
+fn the_brief_says_signed_in_only_when_the_capture_was() {
+    let d = tempfile::tempdir().unwrap();
+    let ws = Workspace::create(d.path(), "Mail", "Clone it", TargetRef::Website { url: "https://mail.example.com/".into() }).unwrap();
+    std::fs::create_dir_all(ws.capture_dir()).unwrap();
+    for deep in [false, true] {
+        assert!(!brief(&ws, "website", deep, false, None, false, None).contains(super::brief::SIGNED_IN_NOTE), "nothing captured yet");
+    }
+    let capture = ws.capture_dir().join("capture.json");
+    std::fs::write(&capture, br#"{"signed_in": false}"#).unwrap();
+    for deep in [false, true] {
+        assert!(!brief(&ws, "website", deep, false, None, false, None).contains(super::brief::SIGNED_IN_NOTE));
+    }
+    std::fs::write(&capture, br#"{"signed_in": true, "signed_in_site": "mail.example.com"}"#).unwrap();
+    for deep in [false, true] {
+        assert!(brief(&ws, "website", deep, false, None, false, None).contains(super::brief::SIGNED_IN_NOTE), "deep: {deep}");
+    }
+    // A saved sign-in the site had ended: the page still asks for a password.
+    std::fs::write(&capture, br#"{"signed_in": true, "sign_in_page": true}"#).unwrap();
+    for deep in [false, true] {
+        assert!(!brief(&ws, "website", deep, false, None, false, None).contains(super::brief::SIGNED_IN_NOTE), "deep: {deep}");
+    }
+    std::fs::write(&capture, b"garbage").unwrap();
+    assert!(!brief(&ws, "website", false, false, None, false, None).contains(super::brief::SIGNED_IN_NOTE));
+}
+
+#[test]
+fn a_new_build_stops_before_any_turn_when_its_stacks_program_is_missing() {
+    let err = missing_program_stop("Rust + egui (eframe)", |_| false).unwrap_err();
+    assert!(err.message.contains("cargo") && err.remediation.as_deref().is_some_and(|r| r.contains("rustup.rs")), "{err:?}");
+    assert!(missing_program_stop("Rust + egui (eframe)", |p| p == "cargo").is_ok());
+    assert!(missing_program_stop("Python", |_| false).is_ok(), "a stack with no program of its own isn't checked");
+    // Every stack built with Cargo says so, and how to get it.
+    for s in stacks::catalogue().iter().filter(|s| s.name.starts_with("Rust") || s.name == "Bevy") {
+        assert_eq!(stacks::missing_program(&s.name, |_| false).map(|(p, from)| (p, !from.is_empty())), Some(("cargo", true)), "{}", s.name);
     }
 }

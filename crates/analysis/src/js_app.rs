@@ -322,6 +322,7 @@ struct Builder {
     edges: BTreeSet<Edge>,
     max_nodes: usize,
     dropped_nodes: usize,
+    dropped_edges: usize,
 }
 
 impl Builder {
@@ -341,9 +342,16 @@ impl Builder {
     fn edge(&mut self, from: Option<&str>, to: Option<&str>, kind: &str) {
         if let (Some(f), Some(t)) = (from, to)
             && f != t
-            && self.edges.len() < self.max_nodes.saturating_mul(4)
         {
-            self.edges.insert(Edge { from: f.into(), to: t.into(), kind: kind.into() });
+            let edge = Edge { from: f.into(), to: t.into(), kind: kind.into() };
+            if self.edges.len() >= self.max_nodes.saturating_mul(4) {
+                // A repeated edge is already represented; only a new edge the cap turns away is dropped.
+                if !self.edges.contains(&edge) {
+                    self.dropped_edges += 1;
+                }
+                return;
+            }
+            self.edges.insert(edge);
         }
     }
 }
@@ -440,7 +448,8 @@ pub fn analyze_application(input: &AppInput, opts: &AppOptions, cancelled: &dyn 
         }
     }
 
-    let mut b = Builder { nodes: Vec::new(), index: HashMap::new(), edges: BTreeSet::new(), max_nodes: opts.max_nodes.max(16), dropped_nodes: 0 };
+    let mut b =
+        Builder { nodes: Vec::new(), index: HashMap::new(), edges: BTreeSet::new(), max_nodes: opts.max_nodes.max(16), dropped_nodes: 0, dropped_edges: 0 };
     let pkg_node = g.package.as_ref().map(|p| {
         let name = p.get("name").and_then(Value::as_str).unwrap_or("package").to_string();
         b.node(format!("package:{name}"), "package", name, p.get("path").and_then(Value::as_str), None, json!({"version": p.get("version")}))
@@ -474,7 +483,7 @@ pub fn analyze_application(input: &AppInput, opts: &AppOptions, cancelled: &dyn 
     for a in &analysed {
         let dir = dir_of(a.host.as_deref().unwrap_or(&a.path)).to_string();
         let mut v = Vec::new();
-        for imp in a.facts.imports.iter().take(2000) {
+        for imp in a.facts.imports.iter() {
             let resolved = if imp.literal { resolver.resolve(&dir, &imp.specifier) } else { None };
             v.push(ResolvedImport { kind: imp.kind.clone(), specifier: imp.specifier.clone(), resolved, line: imp.line });
         }
@@ -1002,9 +1011,36 @@ pub fn analyze_application(input: &AppInput, opts: &AppOptions, cancelled: &dyn 
     }
     g.vendors.extend(vendor_pkgs);
     g.bundlers = bundlers.into_iter().collect();
+    let mut truncated_kinds = BTreeSet::new();
+    let mut truncated_modules = 0usize;
+    for a in &analysed {
+        if !a.facts.truncated.is_empty() {
+            truncated_modules += 1;
+            truncated_kinds.extend(a.facts.truncated.iter().cloned());
+        }
+    }
+    if !truncated_kinds.is_empty() {
+        g.limitations.push((
+            "facts_truncated".into(),
+            format!(
+                "{truncated_modules} source file(s) had per-module lists cut at their limits, so the graph may miss some of these: {}.",
+                truncated_kinds.into_iter().collect::<Vec<_>>().join(", ")
+            ),
+        ));
+    }
     if b.dropped_nodes > 0 {
         g.limitations
             .push(("node_cap".into(), format!("{} graph nodes were dropped at the {}-node cap; raise max_nodes to keep them.", b.dropped_nodes, b.max_nodes)));
+    }
+    if b.dropped_edges > 0 {
+        g.limitations.push((
+            "edge_cap".into(),
+            format!(
+                "{} graph edges were dropped at the {} edge cap (4 x max_nodes); raise max_nodes to keep them.",
+                b.dropped_edges,
+                b.max_nodes.saturating_mul(4)
+            ),
+        ));
     }
     let lexed = g.modules.iter().filter(|m| m.parse_mode == Some(js::ParseMode::Lexer)).count();
     if lexed > 0 {
@@ -1208,7 +1244,7 @@ fn is_limit(e: &craft_anything_formats::sourcemap::SourceMapError) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::tests_support::notes_graph;
+    use super::tests_support::{graph_of, notes_graph};
     use super::*;
     use craft_anything_testkit::electron as fx;
 
@@ -1243,6 +1279,39 @@ mod tests {
         assert_eq!(join_rel("a", "/x/y.js").as_deref(), Some("x/y.js"));
         assert_eq!(package_name("@s/p/x"), "@s/p");
         assert_eq!(package_name("lodash/fp"), "lodash");
+    }
+
+    /// Imports after the old 2,000-entry cut still resolve, reach their module and give it a role.
+    #[test]
+    fn imports_past_two_thousand_still_reach_their_module() {
+        let mut source = (0..2000).map(|_| "require('./dep.js');\n").collect::<String>();
+        source.push_str("require('./late.js');\n");
+        let g = graph_of(vec![
+            ("package.json", r#"{"name":"imports","main":"main.js"}"#.into()),
+            ("main.js", source),
+            ("dep.js", String::new()),
+            ("late.js", String::new()),
+        ]);
+        let late = g.modules.iter().find(|m| m.path == "late.js").unwrap();
+        assert_eq!(late.role, "package");
+        assert!(g.edges.iter().any(|e| e.from == "module:main.js" && e.to == "module:late.js"), "{:?}", g.edges);
+        assert!(!g.limitations.iter().any(|(k, _)| k == "facts_truncated"));
+    }
+
+    /// A facts list cut at its per-file limit is named in the graph's limitations.
+    #[test]
+    fn truncated_fact_lists_are_disclosed() {
+        let mut source = (0..5000).map(|_| "require('./dep.js');\n").collect::<String>();
+        source.push_str("require('./lost.js');\n");
+        let g = graph_of(vec![
+            ("package.json", r#"{"name":"imports","main":"main.js"}"#.into()),
+            ("main.js", source),
+            ("dep.js", String::new()),
+            ("lost.js", String::new()),
+        ]);
+        let (_, message) = g.limitations.iter().find(|(k, _)| k == "facts_truncated").expect("facts_truncated limitation");
+        assert!(message.contains("imports"), "{message}");
+        assert!(!g.edges.iter().any(|e| e.from == "module:main.js" && e.to == "module:lost.js"));
     }
 
     #[test]

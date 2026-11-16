@@ -4,6 +4,7 @@
 
 use crate::tool::{CancelToken, Ctx, Effects, Requires, ToolOutput, ToolSpec, Toolset, parse_params, schema_of};
 use craft_anything_analysis::js_inventory::{InvLimits, Inventorier, Inventory, compare_inventories};
+use craft_anything_analysis::js_source::Ignore;
 use craft_anything_evidence::{
     Authority, Confidence, Coverage, Environment, ErrorCode, Evidence, EvidenceBuilder, Limitation, Location, Subject, ToolError, sha256_hex,
 };
@@ -76,6 +77,10 @@ pub(crate) fn read_capped(path: &Path, max: u64) -> Result<Vec<u8>, ToolError> {
     craft_anything_platform::fs::read_file_capped(path, max)
 }
 
+/// Most bytes of a `.gitignore` that [`walk_dir`] reads. A larger file is skipped and reported,
+/// so a hostile or runaway ignore file can't size the walk's allocation.
+const MAX_GITIGNORE_BYTES: u64 = 1024 * 1024;
+
 /// One file found by [`walk_dir`].
 #[derive(Debug, Clone)]
 pub(crate) struct WalkedFile {
@@ -98,6 +103,9 @@ pub(crate) struct Walked {
     pub truncated: bool,
     /// Folders below the root that couldn't be listed, as (relative path, reason) (#294).
     pub unlisted: Vec<(String, String)>,
+    /// `.gitignore` files that couldn't be read whole, as (relative path, reason), so their rules
+    /// were skipped.
+    pub skipped_gitignores: Vec<(String, String)>,
 }
 
 /// A limitation naming the folders that couldn't be listed, as (path, reason), if any (#294).
@@ -115,6 +123,55 @@ pub(crate) fn unlisted_limitation(unlisted: &[(String, String)]) -> Option<Limit
             if more > 0 { format!(" and {more} more") } else { String::new() }
         ),
     ))
+}
+
+/// A limitation naming the `.gitignore` files whose rules were skipped, if any.
+pub(crate) fn skipped_gitignores_limitation(skipped: &[(String, String)]) -> Option<Limitation> {
+    if skipped.is_empty() {
+        return None;
+    }
+    let first = skipped.iter().take(5).map(|(path, why)| format!("{path} ({why})")).collect::<Vec<_>>().join(", ");
+    let more = skipped.len().saturating_sub(5);
+    Some(Limitation::new(
+        "gitignore_skipped",
+        format!(
+            "{} .gitignore file(s) couldn't be read, so files they ignore may be included: {first}{}",
+            skipped.len(),
+            if more > 0 { format!(" and {more} more") } else { String::new() }
+        ),
+    ))
+}
+
+/// Read one folder's `.gitignore` into `ignore`, recording why its rules were skipped when it
+/// can't be read whole. An absent file is silent: that is the normal case.
+fn read_gitignore(dir: &Path, rel: &str, ignore: &mut Ignore, skipped: &mut Vec<(String, String)>) {
+    let path = dir.join(".gitignore");
+    let shown = if rel.is_empty() { ".gitignore".to_string() } else { format!("{rel}/.gitignore") };
+    if std::fs::symlink_metadata(&path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) {
+        return;
+    }
+    let meta = match std::fs::metadata(&path) {
+        Ok(m) => m,
+        Err(_) => {
+            skipped.push((shown, "couldn't be read".into()));
+            return;
+        }
+    };
+    if !meta.is_file() {
+        skipped.push((shown, "not a regular file".into()));
+        return;
+    }
+    if meta.len() > MAX_GITIGNORE_BYTES {
+        skipped.push((shown, format!("{} bytes; the limit is {MAX_GITIGNORE_BYTES}", meta.len())));
+        return;
+    }
+    match read_capped(&path, MAX_GITIGNORE_BYTES) {
+        Ok(bytes) => match String::from_utf8(bytes) {
+            Ok(text) => ignore.add_file(rel, &text),
+            Err(_) => skipped.push((shown, "not UTF-8".into())),
+        },
+        Err(_) => skipped.push((shown, "couldn't be read".into())),
+    }
 }
 
 pub(crate) struct WalkOptions<'a> {
@@ -265,10 +322,8 @@ pub(crate) fn walk_dir_within(root: &Path, opts: &WalkOptions<'_>, limits: WalkL
             out.truncated = true;
             break;
         }
-        if opts.gitignore
-            && let Ok(text) = std::fs::read_to_string(dir.join(".gitignore"))
-        {
-            ignore.add_file(&rel, &text);
+        if opts.gitignore {
+            read_gitignore(&dir, &rel, &mut ignore, &mut out.skipped_gitignores);
         }
         let entries = match std::fs::read_dir(&dir) {
             Ok(e) => e,
@@ -946,12 +1001,16 @@ fn inventory_input(ctx: &Ctx<'_>, v: &Value) -> Result<(Inventory, Option<String
     Ok((inv, Some(ev.id)))
 }
 
+/// Compare two inventories, reporting capped row lists and partial coverage while the counts stay
+/// complete.
 fn core_archives_compare(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError> {
     let p: CompareArtifactsParams = parse_params(params)?;
     let (l, lid) = inventory_input(ctx, &p.left)?;
     ctx.cancel.check()?;
     let (r, rid) = inventory_input(ctx, &p.right)?;
-    let d = compare_inventories(&l, &r, p.max_rows.clamp(1, 100_000));
+    let max_rows = p.max_rows.clamp(1, 100_000);
+    let d = compare_inventories(&l, &r, max_rows);
+    let rows_capped = d["rows_capped"].as_bool().unwrap_or(false);
     let c = &d["counts"];
     let summary = format!(
         "{} → {}: {} added, {} removed, {} changed, {} moved, {} unchanged.",
@@ -968,6 +1027,11 @@ fn core_archives_compare(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput,
     .confidence(Confidence::Derived);
     if l.truncated || r.truncated {
         b = b.limitation(Limitation::new("truncated", "One inventory was cut short by a limit; files beyond it are not compared."));
+    }
+    if rows_capped {
+        b = b
+            .limitation(Limitation::new("rows_capped", format!("lists are capped at max_rows={max_rows}; counts are complete")))
+            .coverage(Coverage { status: craft_anything_evidence::CoverageStatus::Partial, ..Default::default() });
     }
     for id in [lid, rid].into_iter().flatten() {
         b = b.link(id);
@@ -1094,6 +1158,22 @@ mod tests {
         let d2 = call(&e, "core_archives_compare", json!({"left": {"kind": "saved", "evidence_id": id}, "right": b})).unwrap();
         assert_eq!(d2["result"]["counts"], d["result"]["counts"]);
         assert!(call(&e, "core_archives_compare", json!({"left": "relative/path", "right": b})).is_err());
+    }
+
+    /// A comparison with more changed files than `max_rows` reports the complete counts but says
+    /// the rows were capped, with partial coverage.
+    #[test]
+    fn archive_compare_discloses_capped_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = fx::write_files(&dir.path().join("v1"), &fx::notes_app_files()).unwrap();
+        let b = fx::write_files(&dir.path().join("v2"), &fx::notes_app_v2_files()).unwrap();
+        let e = Engine::new(crate::testing::session());
+        let d = call(&e, "core_archives_compare", json!({"left": a, "right": b, "max_rows": 1})).unwrap();
+        assert_eq!(d["result"]["counts"]["changed"], 2, "{}", d["result"]);
+        assert_eq!(d["result"]["changed"].as_array().map(Vec::len), Some(1), "{}", d["result"]);
+        assert_eq!(d["result"]["rows_capped"], true);
+        assert!(d["limitations"].as_array().unwrap().iter().any(|l| l["code"] == "rows_capped"), "{d}");
+        assert_eq!(d["coverage"]["status"], "partial", "{d}");
     }
 
     #[test]
