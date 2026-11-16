@@ -612,8 +612,11 @@ mod tests {
         mode(0o755);
         assert!(trusted_helper_as(&helper, Some(me)).is_some(), "root's or the account's own helper");
         // A 0755 file the account the check runs as does not own: it can change it, so it is no
-        // helper (the uid is given here so no second account is needed).
-        assert!(trusted_helper_as(&helper, Some(me.wrapping_add(1))).is_none(), "another account's file");
+        // helper (the uid is given here so no second account is needed). A fixture root owns is
+        // root's, which is trusted for every account, so only a suite that is not root can say.
+        if me != 0 {
+            assert!(trusted_helper_as(&helper, Some(me.wrapping_add(1))).is_none(), "another account's file");
+        }
         // A system that cannot name the account trusts no helper at all.
         assert!(trusted_helper_as(&helper, None).is_none(), "no account named");
         mode(0o775);
