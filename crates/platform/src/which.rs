@@ -399,10 +399,10 @@ fn is_executable(p: &Path) -> bool {
     p.is_file()
 }
 
-/// Whether `path` is a helper another local account could have replaced: executable, owned by
-/// root or by the account whose folder holds it, and named through folders only root or that
-/// account could have put an entry in (Unix). A `bwrap` planted in a folder anyone can write, or
-/// one another account owns, is not used as a sandbox: it would run in our place.
+/// Whether `path` is a helper another local account could have replaced: executable, root's or
+/// this account's, and named through folders only root or this account could have put an entry in
+/// (Unix). A `bwrap` planted in a folder anyone can write, or one another account owns, is not
+/// used as a sandbox: it would run in our place.
 ///
 /// `path` must be absolute: a relative one is resolved against whatever working folder the
 /// program is started in, which need not be the one this check reads it against.
@@ -424,27 +424,50 @@ pub fn trusted_helper(path: &Path) -> Option<PathBuf> {
     helper_in_place(&real).then_some(real)
 }
 
-/// Whether the file `path` and every folder above it are root's or one account's own, and nobody
+/// This account's effective user id, where the system says it in a file any process may read:
+/// `/proc/self/status` (`Uid:` is the real, effective, saved and filesystem ids). Linux is the one
+/// Unix `bwrap` runs on; anything else says `None`, and [`helper_in_place`] falls back to the mode
+/// bits and the folders' owners.
+#[cfg(target_os = "linux")]
+fn effective_uid() -> Option<u32> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let ids = status.lines().find_map(|line| line.strip_prefix("Uid:"))?;
+    ids.split_whitespace().nth(1)?.parse().ok()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn effective_uid() -> Option<u32> {
+    None
+}
+
+/// Whether the file `path` and every folder above it are root's or this account's, and nobody
 /// else can write them: a folder's owner can rename or remove what it holds, and one another
-/// account can write can have an entry put in it. The file must be root's or the folder's owner's:
-/// a 0755 file of another account's in a folder root owns is one that account can change.
+/// account can write can have an entry put in it. `path` is a canonical one ([`trusted_helper`]):
+/// a symlink in it now is another account swapping a folder or the file aside mid-check, so only
+/// regular files and folders count, read without following links.
 #[cfg(unix)]
 fn helper_in_place(path: &Path) -> bool {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-    let Ok(meta) = std::fs::metadata(path) else { return false };
+    let Ok(meta) = std::fs::symlink_metadata(path) else { return false };
     let mode = meta.permissions().mode();
     if !meta.is_file() || mode & 0o111 == 0 || mode & 0o022 != 0 {
         return false;
     }
+    let me = effective_uid();
     let owner = meta.uid();
-    let Some(folder) = path.parent().and_then(|d| std::fs::metadata(d).ok()) else { return false };
-    if owner != 0 && folder.uid() != owner {
+    // Root's or this account's. Without a way to name the account, the file must be root's or the
+    // owner's of the folder it is in (one account's whole tree, as far as the modes say).
+    let Some(folder) = path.parent().and_then(|d| std::fs::symlink_metadata(d).ok()) else { return false };
+    if me.map_or(owner != 0 && folder.uid() != owner, |me| owner != 0 && owner != me) {
         return false;
     }
     let mut dir = path.parent();
     while let Some(d) = dir {
-        let Ok(m) = std::fs::metadata(d) else { return false };
-        if m.uid() != 0 && m.uid() != owner {
+        let Ok(m) = std::fs::symlink_metadata(d) else { return false };
+        if !m.is_dir() {
+            return false;
+        }
+        if me.map_or(m.uid() != 0 && m.uid() != owner, |me| m.uid() != 0 && m.uid() != me) {
             return false;
         }
         // A sticky folder may be writable by everyone (like /tmp): only an entry's owner can
