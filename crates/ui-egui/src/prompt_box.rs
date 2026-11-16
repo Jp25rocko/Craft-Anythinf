@@ -131,10 +131,11 @@ pub struct PromptOut {
     pub restore: Option<Vec<PathBuf>>,
 }
 
-/// Put the cursor in the box `name` that `show` draws next in this `ui`.
-pub fn focus(ui: &Ui, name: &str) {
+/// Put the cursor at the end of `text` in the box `name` that `show` draws in this `ui`.
+pub fn focus(ui: &Ui, name: &str, text: &str) {
     let id = box_id(ui, name);
     ui.memory_mut(|m| m.request_focus(id));
+    cursor_to(ui.ctx(), id, text.chars().count());
 }
 
 fn box_id(ui: &Ui, name: &str) -> egui::Id {

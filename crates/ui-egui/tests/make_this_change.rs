@@ -23,17 +23,28 @@ fn a_click_on_make_this_change_leaves_the_cursor_in_the_filled_box() {
         app
     });
     h.run_steps(24);
+    let click = |h: &mut Harness<'_, CraftApp>, at: egui::Pos2| {
+        h.input_mut().events.push(egui::Event::PointerMoved(at));
+        h.step();
+        for pressed in [true, false] {
+            h.input_mut().events.push(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
+            h.step();
+        }
+    };
+    // The box was used before, so it keeps a cursor at the start of its (empty) text.
+    let in_box = h.get_by_label("Ask for a change").rect().center();
+    click(&mut h, in_box);
     // A real pointer click: it also counts as a click outside the prompt box, which must not take
     // the cursor away from it.
     let at = h.get_by_label("Make this change").rect().center();
-    h.input_mut().events.push(egui::Event::PointerMoved(at));
-    h.step();
-    for pressed in [true, false] {
-        h.input_mut().events.push(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() });
-        h.step();
-    }
+    click(&mut h, at);
     h.run_steps(3);
     assert_eq!(h.state().state.project_input, "Make only the change you suggested for: \"why is it cramped?\"");
     assert!(!h.state().state.just_ask, "switched to Change it");
     assert!(h.get_by_label("Ask for a change").is_focused(), "the cursor is in the prompt box");
+    // At the end of the request, ready to add to it, not before its first word.
+    let id = h.ctx.memory(|m| m.focused()).expect("a focused box");
+    let cursor = egui::TextEdit::load_state(&h.ctx, id).and_then(|s| s.cursor.char_range()).expect("a cursor");
+    let end = h.state().state.project_input.chars().count();
+    assert_eq!(cursor.primary, egui::text::CCursor::new(end), "the cursor is after the last character");
 }

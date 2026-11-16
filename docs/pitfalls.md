@@ -576,6 +576,8 @@ when a header is renamed or blanked.
 for focus before the box was drawn in the same frame; the box then saw the button's click as a
 click outside it and gave the focus up. Ask for focus after the box is drawn, and test it with a
 real pointer press and release (`tests/make_this_change.rs`): an accesskit click doesn't show it.
+Focus alone also left the cursor where the box last had it (before the first word of the new
+text): move it to the end too, and test with a box that was used before.
 
 **A source inventory limit came after expansion.** Taking five thousand names after collecting
 every source path copied a large `sourceRoot` into every entry first. Count retained entries and

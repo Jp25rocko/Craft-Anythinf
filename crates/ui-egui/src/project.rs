@@ -1876,7 +1876,7 @@ fn composer(app: &mut CraftApp, ui: &mut Ui, width: f32, t: &Tokens, last_waitin
         // After the box is drawn: the click on "Make this change" counts as a click outside it,
         // which takes the cursor away from a box focused before it was drawn.
         if std::mem::take(&mut app.state.focus_prompt) {
-            prompt_box::focus(ui, "Ask for a change");
+            prompt_box::focus(ui, "Ask for a change", &app.state.project_input);
         }
         // Like the x on a note: the last one waiting comes back into the box to be edited.
         if out.recall
