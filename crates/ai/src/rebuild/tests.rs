@@ -3647,7 +3647,7 @@ impl Conversation for AsksConsent {
         let ask = |id: &str, tool: &str| AgentEvent::ConsentNeeded { call_id: id.into(), tool: tool.into(), title: tool.into(), explanation: String::new() };
         self.events = vec![
             ask("1", "build_command_run"),
-            ask("2", "rea_binary_session"),
+            ask("2", "plugin_tool"),
             AgentEvent::TurnDone { backend: "test".into(), input_tokens: 0, output_tokens: 0, tokens_unknown: false, cost_usd: None, cost_is_estimate: false },
         ];
     }
@@ -3697,7 +3697,7 @@ fn a_build_says_why_it_refused_a_tool_that_needs_consent() {
     assert_eq!(builder.allowed, ["1"], "the Build tools apply the approval policy themselves");
     let [(id, why)] = &builder.refused[..] else { panic!("{:?}", builder.refused) };
     assert_eq!(id, "2");
-    assert!(why.contains("rea_binary_session") && why.contains("Nobody was asked") && why.contains("`consent`"), "{why}");
+    assert!(why.contains("plugin_tool") && why.contains("Nobody was asked") && why.contains("`consent`"), "{why}");
 }
 
 /// A later request's run, reading the project from disk, reminds only a builder that never
