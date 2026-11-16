@@ -387,6 +387,11 @@ pub trait Conversation: Send {
     /// Drain new events (non-blocking).
     fn poll(&mut self) -> Vec<AgentEvent>;
     fn answer_consent(&mut self, call_id: &str, allow: bool);
+    /// Refuse a tool without asking anyone: the model is told `why`, not that the person said no.
+    fn refuse_consent(&mut self, call_id: &str, why: &str) {
+        let _ = why;
+        self.answer_consent(call_id, false);
+    }
     fn stop(&mut self);
     fn is_busy(&self) -> bool;
 }

@@ -241,7 +241,10 @@ fn error_text(e: &ToolError) -> String {
 }
 
 /// Consent waiters shared between the worker and the UI-facing handle.
-type Waiters = Arc<Mutex<HashMap<String, Sender<bool>>>>;
+type Waiters = Arc<Mutex<HashMap<String, Sender<Answer>>>>;
+
+/// A consent answer: allowed, or refused, with why when nobody was asked (`None`: the person said no).
+type Answer = Result<(), Option<String>>;
 
 /// One model with its display name (a link in a fallback chain).
 pub struct ModelSlot {
@@ -912,9 +915,11 @@ impl AgentLoop {
             && e.code == ErrorCode::ConsentRequired
         {
             r = match self.ask_consent(call_id, name, &e.message) {
-                Some(true) => self.host.call(name, input, true, cancel),
-                Some(false) => Err(ToolError::new(ErrorCode::ConsentRequired, "The user said no to running this tool.")
+                Some(Ok(())) => self.host.call(name, input, true, cancel),
+                Some(Err(None)) => Err(ToolError::new(ErrorCode::ConsentRequired, "The user said no to running this tool.")
                     .with_remediation("Find another way that doesn't run code or change a device, or explain why it's needed.")),
+                Some(Err(Some(why))) => Err(ToolError::new(ErrorCode::ConsentRequired, why)
+                    .with_remediation("Find another way, or tell the person what this tool would have done and why it's needed.")),
                 None => Err(ToolError::cancelled()),
             };
         }
@@ -938,7 +943,7 @@ impl AgentLoop {
     }
 
     /// Ask the UI and wait (this worker thread only) for the answer; `None` when stopped.
-    fn ask_consent(&mut self, call_id: &str, tool: &str, explanation: &str) -> Option<bool> {
+    fn ask_consent(&mut self, call_id: &str, tool: &str, explanation: &str) -> Option<Answer> {
         let (tx, rx) = std::sync::mpsc::channel();
         self.waiters.lock().unwrap_or_else(PoisonError::into_inner).insert(call_id.to_string(), tx);
         self.emit(AgentEvent::ConsentNeeded {
@@ -952,13 +957,13 @@ impl AgentLoop {
         self.waiters.lock().unwrap_or_else(PoisonError::into_inner).remove(call_id);
         self.host.journal(
             "consent",
-            json!({"tool": tool, "call_id": call_id, "state": match answer { Some(true) => "allowed", Some(false) => "declined", None => "stopped" }}),
+            json!({"tool": tool, "call_id": call_id, "state": match answer { Some(Ok(())) => "allowed", Some(Err(None)) => "declined", Some(Err(Some(_))) => "refused", None => "stopped" }}),
         );
         answer
     }
 }
 
-fn wait_answer(rx: &Receiver<bool>, stop: &Stop) -> Option<bool> {
+fn wait_answer(rx: &Receiver<Answer>, stop: &Stop) -> Option<Answer> {
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(a) => return Some(a),
@@ -1082,7 +1087,13 @@ impl Conversation for ApiConversation {
 
     fn answer_consent(&mut self, call_id: &str, allow: bool) {
         if let Some(tx) = self.waiters.lock().unwrap_or_else(PoisonError::into_inner).remove(call_id) {
-            let _ = tx.send(allow);
+            let _ = tx.send(if allow { Ok(()) } else { Err(None) });
+        }
+    }
+
+    fn refuse_consent(&mut self, call_id: &str, why: &str) {
+        if let Some(tx) = self.waiters.lock().unwrap_or_else(PoisonError::into_inner).remove(call_id) {
+            let _ = tx.send(Err(Some(why.to_string())));
         }
     }
 
@@ -1331,6 +1342,7 @@ pub(crate) mod tests {
                 ),
                 turn(vec![Block::ToolUse { id: "e".into(), name: "danger".into(), input: json!({}) }], StopReason::ToolUse),
                 turn(vec![Block::ToolUse { id: "f".into(), name: "danger".into(), input: json!({}) }], StopReason::ToolUse),
+                turn(vec![Block::ToolUse { id: "g".into(), name: "danger".into(), input: json!({}) }], StopReason::ToolUse),
                 turn(vec![Block::Text { text: "done".into() }], StopReason::EndTurn),
             ]),
             seen: seen.clone(),
@@ -1344,10 +1356,14 @@ pub(crate) mod tests {
         let events = drain_until_done(&mut c, |e, c| {
             if let AgentEvent::ConsentNeeded { call_id, .. } = e {
                 asked += 1;
-                c.answer_consent(call_id, call_id == "e");
+                if call_id == "g" {
+                    c.refuse_consent(call_id, "Nobody was asked: this run doesn't ask");
+                } else {
+                    c.answer_consent(call_id, call_id == "e");
+                }
             }
         });
-        assert_eq!(asked, 2);
+        assert_eq!(asked, 3);
         let seen = seen.lock().unwrap();
         // turn 1: danger not enabled → error, no consent asked
         let r1 = seen[1].last().unwrap();
@@ -1360,6 +1376,10 @@ pub(crate) mod tests {
         // turn 3 allowed, turn 4 declined
         assert!(matches!(&seen[3].last().unwrap().blocks[0], Block::ToolResult { is_error: false, .. }));
         assert!(matches!(&seen[4].last().unwrap().blocks[0], Block::ToolResult { is_error: true, content, .. } if content.contains("said no")));
+        // turn 5 refused without asking (#1938): the model gets the reason, not "said no"
+        assert!(
+            matches!(&seen[5].last().unwrap().blocks[0], Block::ToolResult { is_error: true, content, .. } if content.contains("Nobody was asked") && !content.contains("said no"))
+        );
         let calls = host.calls.lock().unwrap().clone();
         assert!(calls.contains(&("danger".into(), true)));
         assert!(events.iter().any(|e| matches!(e, AgentEvent::TextDelta { text } if text == "done")));
@@ -1367,7 +1387,7 @@ pub(crate) mod tests {
         for kind in ["user_message", "model_turn", "consent"] {
             assert!(j.iter().any(|(k, _)| k == kind));
         }
-        assert!(matches!(events.last(), Some(AgentEvent::TurnDone { input_tokens: 50, .. })));
+        assert!(matches!(events.last(), Some(AgentEvent::TurnDone { input_tokens: 60, .. })));
         // cost known for the priced model id
         assert!(matches!(events.last(), Some(AgentEvent::TurnDone { cost_usd: Some(_), .. })));
     }
