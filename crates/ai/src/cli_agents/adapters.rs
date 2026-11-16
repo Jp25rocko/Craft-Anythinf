@@ -538,12 +538,23 @@ impl AgentAdapter for ClaudeCode {
                     });
                 }
             }
+            // Each turn reports its plan's limits; `rejected` means this one was refused by them.
+            "rate_limit_event" => {
+                let info = v.get("rate_limit_info");
+                if info.and_then(|i| i.get("status")).and_then(Value::as_str) == Some("rejected") {
+                    let kind = info.and_then(|i| i.get("rateLimitType")).and_then(Value::as_str).unwrap_or_default().to_string();
+                    p.plan_limit = Some((kind, info.and_then(|i| i.get("resetsAt")).and_then(Value::as_u64)));
+                }
+            }
             "assistant" => {
                 if let Some(code) = v.get("error").and_then(Value::as_str) {
-                    let failure = TurnFailure::claude(code);
+                    let plan_limit = if code == "rate_limit" { p.plan_limit.clone() } else { None };
+                    let failure = if plan_limit.is_some() { TurnFailure::new(FailureKind::UsageLimit) } else { TurnFailure::claude(code) };
                     p.failure = Some(failure);
                     let why = v.pointer("/message/content").map(content_text).unwrap_or_else(|| code.to_string());
                     let (message, hint) = claude_code_failure_in(&why, self.folder.as_deref());
+                    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                    let hint = hint.or_else(|| plan_limit.map(|(kind, at)| plan_limit_fix(&kind, at, now)));
                     let remediation = hint.or_else(|| match failure.kind {
                         FailureKind::Authentication => self.sign_in_fix(),
                         FailureKind::Billing => Some("Check the account's credits, plan and spending limit before trying again.".into()),

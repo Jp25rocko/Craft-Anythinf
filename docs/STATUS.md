@@ -412,6 +412,10 @@ Builder failures carry a typed reason through `Conversation::last_failure`. Type
 billing, missing programs, unavailable tools, configuration and unknown protocol failures stop
 for attention. Transport interruptions, rate limits and nonzero process exits without a typed
 error get at most three retries; the decision no longer searches English error messages.
+A Claude Code rate limit after its stream said the plan's limit refused the turn
+(`rate_limit_event` with `status: rejected`: the 5-hour or weekly allowance) isn't retried; the
+build stops and says which limit and about when it resets (#1919). Unit-tested on the stream;
+not seen live with a used-up plan.
 Structured provider waits win; the earlier numeric “retry in”
 hint is only a delay fallback after a failure has already been classified as retryable. All waits
 remain cancellable and bounded to fifteen minutes.

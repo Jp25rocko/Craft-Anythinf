@@ -495,6 +495,25 @@ pub fn claude_code_failure(why: &str) -> (String, Option<String>) {
 
 /// [`claude_code_failure`] for Claude Code in a folder chosen for it (`folder`), whose sign-in is
 /// its own.
+/// What to do about a used-up plan limit (`kind` as Claude Code names it), `resets_at` being
+/// Unix seconds and `now` the time it's said.
+pub(crate) fn plan_limit_fix(kind: &str, resets_at: Option<u64>, now: u64) -> String {
+    let which = match kind {
+        "five_hour" => "5-hour",
+        k if k.starts_with("seven_day") => "weekly",
+        _ => "usage",
+    };
+    let when = match resets_at.map(|at| at.saturating_sub(now)) {
+        Some(s) if s >= 2 * 3600 => format!(" It resets in about {} hours.", s.div_ceil(3600)),
+        Some(s) if s > 60 => format!(" It resets in about {} minutes.", s.div_ceil(60)),
+        Some(_) => " It resets in a minute or so.".to_string(),
+        None => String::new(),
+    };
+    format!(
+        "Your Claude plan's {which} limit is used up, so the build stopped instead of trying again.{when} Press Try again once it has reset, or choose another AI to build in Settings → AI."
+    )
+}
+
 pub(crate) fn claude_code_failure_in(why: &str, folder: Option<&Path>) -> (String, Option<String>) {
     if why.to_ascii_lowercase().contains(TOO_OLD_FOR_MODEL) {
         return (
@@ -552,6 +571,9 @@ pub struct StreamParser {
     pub session_missing: bool,
     /// A protocol fact about the failed turn, independent of the text shown to the person.
     pub failure: Option<TurnFailure>,
+    /// Claude Code said the plan's limit refused this turn: which limit (`five_hour`,
+    /// `seven_day`…) and when it resets, in Unix seconds.
+    pub plan_limit: Option<(String, Option<u64>)>,
 }
 
 fn short_tool(name: &str) -> String {
@@ -598,6 +620,7 @@ impl StreamParser {
             saw_result: false,
             session_missing: false,
             failure: None,
+            plan_limit: None,
         }
     }
 
@@ -1626,6 +1649,37 @@ mod tests {
         let mut p = StreamParser::new(adapter_for("claude-code"));
         assert!(!p.line(r#"{"type":"system","subtype":"init","mcp_servers":[{"name":"craft-anything","status":"needs-auth"}]}"#).is_empty());
         assert_eq!(p.failure, Some(TurnFailure::new(FailureKind::ToolsUnavailable)));
+    }
+
+    /// #1919: a used-up weekly limit was retried as a per-minute rate limit, failing each time.
+    #[test]
+    fn a_used_up_claude_plan_limit_is_not_retried_and_says_when_it_resets() {
+        let error = json!({"type":"assistant","error":"rate_limit","message":{"content":[{"type":"text","text":"You've hit your weekly limit · resets 6pm"}]}});
+        let event =
+            |status: &str| json!({"type":"rate_limit_event","rate_limit_info":{"status":status,"resetsAt":4_102_444_800u64,"rateLimitType":"seven_day"}});
+        let mut p = StreamParser::new(adapter_for("claude-code"));
+        assert!(p.line(&event("rejected").to_string()).is_empty(), "nothing to show by itself");
+        let events = p.line(&error.to_string());
+        assert_eq!(p.failure, Some(TurnFailure::new(FailureKind::UsageLimit)));
+        assert!(!p.failure.unwrap().retryable());
+        let [AgentEvent::Error { message, remediation: Some(fix), .. }] = events.as_slice() else { panic!("{events:?}") };
+        assert!(message.contains("weekly limit") && fix.contains("weekly limit is used up") && fix.contains("resets in about"), "{fix}");
+
+        // A turn its limits allowed, then a rate limit: a per-minute one, waited for and tried again.
+        let mut p = StreamParser::new(adapter_for("claude-code"));
+        p.line(&event("allowed").to_string());
+        p.line(&error.to_string());
+        assert_eq!(p.failure, Some(TurnFailure::new(FailureKind::RateLimited)));
+    }
+
+    #[test]
+    fn plan_limit_fix_names_the_limit_and_how_long() {
+        assert!(plan_limit_fix("five_hour", Some(10_000 + 3 * 3600), 10_000).contains("5-hour limit is used up"));
+        assert!(plan_limit_fix("five_hour", Some(10_000 + 3 * 3600), 10_000).contains("about 3 hours"));
+        assert!(plan_limit_fix("seven_day_opus", Some(10_000 + 90 * 60), 10_000).contains("weekly limit"));
+        assert!(plan_limit_fix("seven_day_opus", Some(10_000 + 90 * 60), 10_000).contains("about 90 minutes"));
+        assert!(plan_limit_fix("x", Some(5), 10_000).contains("a minute or so"), "a reset already past");
+        assert!(!plan_limit_fix("x", None, 10_000).contains("resets in"));
     }
 
     #[test]
