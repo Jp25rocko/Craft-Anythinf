@@ -938,16 +938,31 @@ fn website_choice_stays_picked_while_the_address_is_empty() {
 fn simple_and_advanced_use_the_same_text_sizes() {
     let mut h = harness(|| demo::app(demo::engine(Mode::Beginner, true)));
     h.run_steps(3);
+    // Every text style (Body, Small, Button, Heading, Monospace) and all of egui's spacing:
+    // padding, gaps, control sizes and margins.
     let sizes = |h: &Harness<'static, CraftApp>| {
         let style = h.ctx.global_style();
-        let size = |s: egui::TextStyle| style.text_styles.get(&s).map(|f| f.size);
-        (size(egui::TextStyle::Body), size(egui::TextStyle::Small), size(egui::TextStyle::Heading), style.spacing.interact_size.y)
+        (style.text_styles.clone(), style.spacing.clone())
     };
     let simple = sizes(&h);
-    assert_eq!(simple.0, Some(craft_anything_ui_egui::theme::BODY), "body text is the scale's BODY");
+    let body = simple.0.get(&egui::TextStyle::Body).map(|f| f.size);
+    assert_eq!(body, Some(craft_anything_ui_egui::theme::BODY), "body text is the scale's BODY");
+    assert_eq!(simple.0.len(), 5, "the five text styles are all set: {:?}", simple.0.keys());
     h.state_mut().set_mode(Mode::Experienced);
     h.run_steps(3);
     assert_eq!(sizes(&h), simple, "Advanced draws text and controls at the same sizes");
+    // Review of #1236: back again after the theme and the zoom changed in Advanced. The theme is
+    // applied again, the zoom stays the person's, and the sizes still match.
+    h.state_mut().settings.theme = "studio-light".into();
+    h.ctx.set_zoom_factor(1.5);
+    h.run_steps(3);
+    assert_eq!(sizes(&h), simple, "another theme keeps the sizes");
+    h.state_mut().set_mode(Mode::Beginner);
+    h.run_steps(3);
+    assert_eq!(sizes(&h), simple, "Simple again, after a theme and zoom change, draws at the same sizes");
+    assert_eq!(h.ctx.zoom_factor(), 1.5, "switching modes leaves the zoom as it was");
+    h.ctx.set_zoom_factor(1.0);
+    h.run_steps(2);
     // Larger text is zoom's job now, and the Mode row says how.
     h.state_mut().state.settings_open = true;
     h.run_steps(3);
