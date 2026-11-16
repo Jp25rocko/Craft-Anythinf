@@ -3459,4 +3459,22 @@ fn settings_about_shows_the_apps_version() {
     h.step();
     let copied = h.output().platform_output.commands.iter().any(|c| matches!(c, egui::OutputCommand::CopyText(t) if *t == version));
     assert!(copied, "the button copies the version");
+
+    // The keyboard path: Tab from the About tab reaches the button, and Enter or Space copies.
+    // `key_press` queues the key's press and release, and `step` runs a frame for each, so the
+    // press is sent alone to read the frame it lands in.
+    h.get_by_label("About").focus();
+    h.run_steps(2);
+    h.key_press(egui::Key::Tab);
+    h.run_steps(2);
+    assert!(h.get_by_label("Copy the version").is_focused(), "Tab reaches the copy button");
+    for key in [egui::Key::Enter, egui::Key::Space] {
+        let event = |pressed| egui::Event::Key { key, pressed, modifiers: egui::Modifiers::NONE, repeat: false, physical_key: None };
+        h.event(event(true));
+        h.step();
+        let copied = h.output().platform_output.commands.iter().any(|c| matches!(c, egui::OutputCommand::CopyText(t) if *t == version));
+        assert!(copied, "{key:?} on the button copies the version");
+        h.event(event(false));
+        h.step();
+    }
 }
