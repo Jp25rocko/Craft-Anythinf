@@ -884,10 +884,7 @@ mod unix {
                         used: false,
                         kind: "none",
                         reason: Some(match &found {
-                            Some(path) => format!(
-                                "bubblewrap ({}) could be replaced by another user, so it isn't trusted as a sandbox",
-                                path.display()
-                            ),
+                            Some(path) => format!("bubblewrap ({}) could be replaced by another user, so it isn't trusted as a sandbox", path.display()),
                             None => "bubblewrap (bwrap) is not installed".into(),
                         }),
                     },
