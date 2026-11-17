@@ -531,6 +531,28 @@ that checks the PID), and test by killing the owner, not by dropping the guard.
 **Stopping a long run leaves children behind** unless every program goes through
 `craft_anything_platform::process`. After stopping one, check that its child processes are gone.
 
+**A pid was trusted across a restart.** A pinned program's process id can be reused by another
+process, so keeping only the id could show the wrong program as running or kill it. Keep the
+platform's start-time token and boot id with the pid, treat a mark without a boot id as untrusted,
+check all three before showing it running or stopping it, and test matching and mismatched tokens.
+
+**A group leader's exit was taken for the group's.** A SIGTERM can take the leader while a child
+ignores it; stopping only checked the leader, so the child survived with no record. Follow the
+process group even after the leader exits (listing and pruning discover its members), signal each
+member through a stable pidfd, escalate to SIGKILL for survivors, and keep the survivors in the run
+record; test a child that ignores TERM and one that outlives its leader.
+
+**An unreadable `/proc` looked like an empty group.** Flattening `read_dir` errors made a stop drop
+the record while the process could still be running. Propagate the error, mark the record
+uncertain, and keep listing and deletion protection until a later stop confirms the group is gone;
+test the unconfirmed retention.
+
+**A pin's read-launch-save raced another process, and a newer file was rewritten.** Atomic writes
+and the in-process session lock didn't stop two engines losing each other's run record, and a
+version newer than this build was saved back after unknown fields were dropped. Hold a
+cross-process pin lock over the whole read-launch-save sequence, and refuse a newer version before
+any launch or save; test two engines and a v9 pin.
+
 **Separate target folders fill the disk.** Agents given their own `CARGO_TARGET_DIR` under
 `target/` (to avoid locking a running exe) left them behind; one reached 79 GB and the disk filled
 mid-build ("not enough space", os error 112). Delete an agent's target folder when its work is

@@ -21,7 +21,7 @@ use crate::versioned;
 use crate::workspace::{self, Workspace};
 use craft_anything_evidence::{ErrorCode, ToolError};
 use craft_anything_platform::sync::Mutex;
-use craft_anything_platform::{Ended, Launch, Launched};
+use craft_anything_platform::{Ended, Launch, Launched, ProcessMark, process_alive, process_group_members, process_mark, stop_group};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -36,13 +36,20 @@ pub const PIN_FILE: &str = "pin.json";
 /// Where a pin keeps a program it copied from outside the app (a moved Cargo target directory).
 const PIN_PROGRAM: &str = "pin-program";
 /// The current `pin.json` format version.
-pub const PIN_VERSION: u32 = 2;
+pub const PIN_VERSION: u32 = 3;
 /// Version 2 remembers the program selected for an argument-free launch inside the copied app.
-const PIN_STEPS: &[versioned::Step<Value>] = &[pin_v1_to_v2];
+/// Version 3 remembers the programs a pin started, so a restart can still see and stop them.
+const PIN_STEPS: &[versioned::Step<Value>] = &[pin_v1_to_v2, pin_v2_to_v3];
 
 fn pin_v1_to_v2(doc: &mut Value) -> Result<(), String> {
     let object = doc.as_object_mut().ok_or_else(|| "a pin must be an object".to_string())?;
     object.insert("program".into(), Value::Null);
+    Ok(())
+}
+
+fn pin_v2_to_v3(doc: &mut Value) -> Result<(), String> {
+    let object = doc.as_object_mut().ok_or_else(|| "a pin must be an object".to_string())?;
+    object.insert("runs".into(), Value::Array(Vec::new()));
     Ok(())
 }
 const _: () = assert!(PIN_STEPS.len() as u32 + 1 == PIN_VERSION, "one step per pin.json version after the first");
@@ -91,6 +98,84 @@ impl PinMode {
     }
 }
 
+/// One process left in a pin's group after a stop attempt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PinMember {
+    pub pid: u32,
+    pub start: String,
+    pub boot: String,
+}
+
+impl PinMember {
+    fn mark(&self, group: u32) -> ProcessMark {
+        ProcessMark { pid: self.pid, start: self.start.clone(), boot: self.boot.clone(), group }
+    }
+}
+
+/// The program a pin started and any members left after a stop attempt. The pid, start token and
+/// boot identify the group leader; members keep survivors protected across a restart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PinRun {
+    pub pid: u32,
+    /// The platform's start-time token (`/proc/<pid>/stat` field 22 on Linux).
+    pub start: String,
+    /// The boot the leader belongs to; an older record without one is not trusted.
+    #[serde(default)]
+    pub boot: String,
+    /// Processes still alive in the group after a stop that did not finish.
+    #[serde(default)]
+    pub members: Vec<PinMember>,
+    /// A stop could not establish that the group is gone (for example `/proc` was unreadable);
+    /// keep the run recorded and protective until a later stop confirms it.
+    #[serde(default)]
+    pub uncertain: bool,
+}
+
+impl PinRun {
+    fn leader(&self) -> ProcessMark {
+        ProcessMark { pid: self.pid, start: self.start.clone(), boot: self.boot.clone(), group: self.pid }
+    }
+    fn running_marks(&self) -> Vec<ProcessMark> {
+        let leader = self.leader();
+        let mut out: Vec<ProcessMark> = Vec::new();
+        if process_alive(&leader) {
+            push_run_mark(&mut out, leader.clone());
+        }
+        match process_group_members(&leader) {
+            Ok(members) => {
+                for mark in members {
+                    if process_alive(&mark) {
+                        push_run_mark(&mut out, mark);
+                    }
+                }
+            }
+            Err(_) => {
+                // A group we couldn't look at is not a group that is gone.
+                if !self.uncertain {
+                    push_run_mark(&mut out, leader.clone());
+                }
+            }
+        }
+        for member in &self.members {
+            let mark = member.mark(self.pid);
+            if process_alive(&mark) {
+                push_run_mark(&mut out, mark);
+            }
+        }
+        if self.uncertain && out.is_empty() {
+            push_run_mark(&mut out, leader);
+        }
+        out
+    }
+}
+
+/// Add a mark once, keyed by pid, start token and boot.
+fn push_run_mark(out: &mut Vec<ProcessMark>, mark: ProcessMark) {
+    if !out.iter().any(|m| m.pid == mark.pid && m.start == mark.start && m.boot == mark.boot) {
+        out.push(mark);
+    }
+}
+
 /// One pin (`pinned/<id>/pin.json`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Pin {
@@ -116,6 +201,9 @@ pub struct Pin {
     /// Older pins and launches through an external runtime keep the existing discovery path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub program: Option<PathBuf>,
+    /// Programs this pin started, with the start times that tell them from a reused pid.
+    #[serde(default)]
+    pub runs: Vec<PinRun>,
 }
 
 impl Pin {
@@ -133,6 +221,68 @@ impl Pin {
 
     pub fn log_path(&self, ws: &Workspace) -> PathBuf {
         self.dir(ws).join("last-run.log")
+    }
+
+    /// The recorded runs that are still the same running process (leader or a group member).
+    pub fn running_runs(&self) -> Vec<ProcessMark> {
+        self.runs.iter().flat_map(PinRun::running_marks).collect()
+    }
+
+    /// Forget recorded runs and members whose processes are gone; whether anything changed. A
+    /// group whose leader is gone is still followed: a live child keeps its run recorded.
+    pub fn prune_runs(&mut self) -> bool {
+        let mut changed = false;
+        for run in &mut self.runs {
+            let leader = run.leader();
+            match process_group_members(&leader) {
+                Ok(live) => {
+                    let mut members: Vec<PinMember> = run
+                        .members
+                        .iter()
+                        .filter(|m| process_alive(&m.mark(run.pid)) && !(m.pid == run.pid && m.start == run.start && m.boot == run.boot))
+                        .cloned()
+                        .collect();
+                    for mark in live {
+                        if mark.pid == run.pid && mark.start == run.start && mark.boot == run.boot {
+                            continue;
+                        }
+                        let member = PinMember { pid: mark.pid, start: mark.start, boot: mark.boot };
+                        if !members.contains(&member) {
+                            members.push(member);
+                        }
+                    }
+                    members.sort_by(|a, b| a.pid.cmp(&b.pid).then_with(|| a.start.cmp(&b.start)));
+                    members.dedup();
+                    changed |= members != run.members || run.uncertain;
+                    run.members = members;
+                    run.uncertain = false;
+                }
+                Err(_) => {
+                    if !run.uncertain {
+                        run.uncertain = true;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        let before = self.runs.len();
+        self.runs.retain(|r| process_alive(&r.leader()) || !r.members.is_empty() || r.uncertain);
+        changed || self.runs.len() != before
+    }
+
+    /// Remember a started process once, storing the group members discovered at spawn; whether it
+    /// was new.
+    pub fn remember_run(&mut self, mark: &ProcessMark, members: &[ProcessMark]) -> bool {
+        if self.runs.iter().any(|r| r.pid == mark.pid && r.start == mark.start && r.boot == mark.boot) {
+            return false;
+        }
+        let members = members
+            .iter()
+            .filter(|m| !(m.pid == mark.pid && m.start == mark.start && m.boot == mark.boot))
+            .map(|m| PinMember { pid: m.pid, start: m.start.clone(), boot: m.boot.clone() })
+            .collect();
+        self.runs.push(PinRun { pid: mark.pid, start: mark.start.clone(), boot: mark.boot.clone(), members, uncertain: false });
+        true
     }
 
     /// Resolve the recorded program within the copy; old pins retain their discovery behavior.
@@ -190,9 +340,51 @@ pub fn read_pin(bytes: &[u8]) -> Result<Pin, ToolError> {
     serde_json::from_value(doc).map_err(|e| ToolError::invalid(e.to_string()))
 }
 
-fn save(ws: &Workspace, pin: &Pin) -> Result<(), ToolError> {
+pub(crate) fn ensure_current(pin: &Pin) -> Result<(), ToolError> {
+    if pin.version > PIN_VERSION {
+        return Err(ToolError::invalid(format!("This pin was made by a newer Craft Anything (format {}).", pin.version))
+            .with_remediation("Update Craft Anything to open or change it."));
+    }
+    Ok(())
+}
+
+pub(crate) fn save(ws: &Workspace, pin: &Pin) -> Result<(), ToolError> {
+    ensure_current(pin)?;
     let json = serde_json::to_vec_pretty(pin).map_err(|e| ToolError::internal(e.to_string()))?;
     crate::project::write_atomic(&pin.dir(ws).join(PIN_FILE), &json)
+}
+
+/// Stop the recorded group; whether it is gone, the members still alive, and whether the
+/// disappearance was confirmed.
+pub(crate) fn stop_run(run: &PinRun) -> (bool, bool, Vec<PinMember>, bool) {
+    let known: Vec<ProcessMark> = run.members.iter().map(|m| m.mark(run.pid)).collect();
+    let outcome = stop_group(&run.leader(), &known);
+    (outcome.gone, outcome.stopped, outcome.survivors.into_iter().map(|m| PinMember { pid: m.pid, start: m.start, boot: m.boot }).collect(), outcome.confirmed)
+}
+
+/// Holds a pin's cross-process lock; dropping it releases the lock.
+pub(crate) struct PinLock {
+    _file: std::fs::File,
+}
+
+/// Serialize a pin's read-launch-save sequence across app and CLI processes. The wait is bounded:
+/// another holder gets ten seconds, then the caller is told to try again.
+pub(crate) fn lock(ws: &Workspace, id: u32) -> Result<PinLock, ToolError> {
+    let dir = ws.root.join(PINNED);
+    std::fs::create_dir_all(&dir).map_err(|e| ToolError::io(dir.display(), e))?;
+    let path = dir.join(format!("{id}.lock"));
+    let file = std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).open(&path).map_err(|e| ToolError::io(path.display(), e))?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(PinLock { _file: file }),
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(ToolError::invalid("Another Craft Anything is using this pin.").with_remediation("Try again in a moment."));
+            }
+            Err(std::fs::TryLockError::Error(e)) => return Err(ToolError::io(path.display(), e)),
+        }
+    }
 }
 
 /// A project's pins, oldest first. Folders without a readable pin.json (a copy still being made,
@@ -460,8 +652,19 @@ pub fn create(ws: &Workspace, mode: PinMode, name: Option<&str>, godot: Option<&
         (None, Some(r)) => format!("{project} · round {r}"),
         (None, None) => format!("{project} · pin {id}"),
     };
-    let mut pin =
-        Pin { version: PIN_VERSION, id, name, mode, created_ms: now_ms(), round, bytes: 0, shared_bytes: 0, copied_shared_bytes: 0, program: recorded_program };
+    let mut pin = Pin {
+        version: PIN_VERSION,
+        id,
+        name,
+        mode,
+        created_ms: now_ms(),
+        round,
+        bytes: 0,
+        shared_bytes: 0,
+        copied_shared_bytes: 0,
+        program: recorded_program,
+        runs: Vec::new(),
+    };
     let made = (|| {
         (pin.bytes, pin.shared_bytes, pin.copied_shared_bytes) = copy(ws, &program, args.is_empty(), &pin.app_dir(ws), mode, progress)?;
         pin.launch(ws, godot)?;
@@ -572,8 +775,9 @@ pub fn tail(log: &Path) -> String {
 pub enum Opened {
     /// It was already running, and no other copy was asked for.
     AlreadyRunning(Launched),
-    /// Started; `quit` when it ended within [`QUICK_EXIT`].
-    Started { launched: Launched, quit: Option<Ended> },
+    /// Started; `quit` when it ended within [`QUICK_EXIT`], and the mark captured immediately
+    /// after spawn, before that wait.
+    Started { launched: Launched, quit: Option<Ended>, mark: Option<ProcessMark> },
 }
 
 /// Programs started from pins and Play in this session, by the folder they run from. Starts
@@ -604,7 +808,7 @@ impl Runs {
     /// Start `launch` from `dir`, unless something already runs from there and `another` isn't
     /// asked for. Waits up to [`QUICK_EXIT`] to see whether it quits straight away.
     pub fn open(&self, dir: &Path, launch: Launch, another: bool) -> Result<Opened, ToolError> {
-        let launched = {
+        let (launched, mark) = {
             let mut map = self.0.lock().unwrap_or_else(PoisonError::into_inner);
             let list = map.entry(key(dir)).or_default();
             list.retain(Launched::is_running);
@@ -612,11 +816,14 @@ impl Runs {
                 return Ok(Opened::AlreadyRunning(first.clone()));
             }
             let launched = launch.start_watched()?;
+            // Capture the identity before the quick-exit wait: a leader that exits at once can
+            // leave a child that still needs recording.
+            let mark = process_mark(launched.pid());
             list.push(launched.clone());
-            launched
+            (launched, mark)
         };
         let quit = launched.wait_timeout(QUICK_EXIT);
-        Ok(Opened::Started { launched, quit })
+        Ok(Opened::Started { launched, quit, mark })
     }
 
     /// Stop everything running from `dir`; how many were stopped.
@@ -1012,13 +1219,34 @@ mod tests {
     }
 
     #[test]
+    fn a_newer_pin_is_not_rewritten() {
+        let d = tempfile::tempdir().unwrap();
+        let ws = Workspace::create(d.path(), "Newer", "an app", TargetRef::None).unwrap();
+        let dir = ws.root.join(PINNED).join("1");
+        std::fs::create_dir_all(&dir).unwrap();
+        let text = br#"{"version":9,"id":1,"name":"New","mode":"frozen","created_ms":1,"colour":"red"}"#;
+        std::fs::write(dir.join(PIN_FILE), text).unwrap();
+        let pin = read_pin(text).unwrap();
+        let err = save(&ws, &pin).unwrap_err();
+        assert!(err.message.contains("newer"), "{err:?}");
+        assert_eq!(std::fs::read(dir.join(PIN_FILE)).unwrap(), text, "a newer file is left exactly as it was");
+    }
+
+    #[test]
     fn an_older_or_newer_pin_file_is_read() {
         let old = read_pin(br#"{"id":2,"name":"A","mode":"live","created_ms":5}"#).unwrap();
         assert_eq!((old.version, old.mode, old.bytes), (PIN_VERSION, PinMode::Live, 0));
         assert_eq!(old.program, None);
+        assert!(old.runs.is_empty(), "an older pin starts with no recorded runs");
         let frozen = read_pin(br#"{"version":1,"id":3,"name":"Old copy","mode":"frozen","created_ms":5,"program":"formerly-unknown"}"#).unwrap();
         assert_eq!(frozen.version, PIN_VERSION);
         assert_eq!(frozen.program, None, "the migration cannot invent the old pin's selected program");
+        assert!(frozen.runs.is_empty());
+        let v2 = read_pin(br#"{"version":2,"id":4,"name":"B","mode":"frozen","created_ms":5,"program":null}"#).unwrap();
+        assert_eq!(v2.version, PIN_VERSION);
+        assert!(v2.runs.is_empty(), "version 2 gains an empty run list");
+        let v3 = read_pin(br#"{"version":3,"id":5,"name":"C","mode":"frozen","created_ms":5,"runs":[{"pid":7,"start":"99"}]}"#).unwrap();
+        assert_eq!((v3.version, v3.runs.len()), (3, 1));
         let newer = read_pin(br#"{"version":9,"id":2,"name":"A","mode":"frozen","created_ms":5,"colour":"red"}"#).unwrap();
         assert_eq!(newer.version, 9, "a newer pin keeps its version");
         assert!(read_pin(b"[]").is_err());
@@ -1037,6 +1265,54 @@ mod tests {
 
     fn shell(script: &str) -> Launch {
         if cfg!(windows) { Launch::new("cmd").args(["/C", script]).hide_console() } else { Launch::new("sh").args(["-c", script]) }
+    }
+
+    /// Stops a started process when the test ends, so a failed assertion leaves nothing behind.
+    #[cfg(target_os = "linux")]
+    struct StopOnDrop(Launched);
+
+    #[cfg(target_os = "linux")]
+    impl Drop for StopOnDrop {
+        fn drop(&mut self) {
+            self.0.stop();
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pruning_keeps_a_saved_member_the_group_scan_does_not_show() {
+        // `exec` replaces the shell, so the leader's group holds only the leader on every
+        // `/bin/sh` (dash forks a `sleep` child beside the shell otherwise).
+        let leader = StopOnDrop(Launch::new("sh").args(["-c", "exec sleep 30"]).start_watched().unwrap());
+        let member = StopOnDrop(Launch::new("sh").args(["-c", "exec sleep 30"]).start_watched().unwrap());
+        let l = process_mark(leader.0.pid()).unwrap();
+        let m = process_mark(member.0.pid()).unwrap();
+        let scanned = process_group_members(&l).unwrap();
+        assert!(process_alive(&m), "the saved member is live");
+        assert!(!scanned.iter().any(|p| p.pid == m.pid), "the saved member is not in the leader's group: {scanned:?}");
+        assert_eq!(scanned.len(), 1, "the leader's group holds only the leader: {scanned:?}");
+        let mut pin = Pin {
+            version: PIN_VERSION,
+            id: 1,
+            name: "P".into(),
+            mode: PinMode::Frozen,
+            created_ms: 1,
+            round: None,
+            bytes: 0,
+            shared_bytes: 0,
+            copied_shared_bytes: 0,
+            program: None,
+            runs: vec![PinRun {
+                pid: l.pid,
+                start: l.start,
+                boot: l.boot,
+                members: vec![PinMember { pid: m.pid, start: m.start, boot: m.boot }],
+                uncertain: false,
+            }],
+        };
+        pin.prune_runs();
+        assert_eq!(pin.runs.len(), 1);
+        assert_eq!(pin.runs[0].members.len(), 1, "a saved live member absent from the group scan stays");
     }
 
     #[test]

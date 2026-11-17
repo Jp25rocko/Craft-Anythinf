@@ -1914,8 +1914,11 @@ to the project next.
 - [ ] Pins of one project sharing with each other, so a third frozen copy of the same assets
       takes no more space
 - [ ] Pin a website (a frozen copy of the built site, each served on its own port)
-- [ ] A pin started before the app restarted shows as running (keep its process id and start
-      time in the pin, and check both), and can be stopped
+- [x] Linux: a pin started before the app restarted shows as running and can be stopped (keep its
+      process id and `/proc` start time in the pin, and check both before stopping it)
+      — claimed: AlexJoaquimPereira, branch bugfix/r2.10-pin-restart-state-linux
+- [ ] macOS and Windows: the same, with the platform's own start-time token (`ps` or a safe process
+      API), before their pins can be seen and stopped across a restart
 - [x] Cap a run's log (`last-run.log`, `play.log`): it grows as long as the program prints. The
       program keeps writing straight to an append-only file, and while we are alive a watcher cuts
       that file back to empty once it passes 1 MiB, so its writes never fail or block and a program

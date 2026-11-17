@@ -6,7 +6,7 @@ use crate::pins::{self, Opened, PinMode, Runs};
 use crate::tool::{Ctx, Effects, Requires, ToolOutput, ToolSpec, Toolset, parse_params, schema_of};
 use crate::workspace::Workspace;
 use craft_anything_evidence::{ErrorCode, ToolError};
-use craft_anything_platform::Launch;
+use craft_anything_platform::{Launch, ProcessMark, process_group_members, process_mark};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -29,7 +29,7 @@ pub fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             id: "project_pins_list",
             title: "List pinned builds",
-            summary: "The pins of one project, or of every project in the project folders from settings: id, name, frozen or light, the round it was pinned at, its size, and whether it's running (started in this session).",
+            summary: "The pins of one project, or of every project in the project folders from settings: id, name, frozen or light, the round it was pinned at, its size, and whether it's running (started in this session, or a Linux program recorded before a restart).",
             beginner: "Shows the versions you kept.",
             toolset: Toolset::Projects,
             effects: Effects::READ_ONLY,
@@ -43,7 +43,7 @@ pub fn specs() -> Vec<ToolSpec> {
             summary: "Start a pinned build in its own window. If it's already running, says so instead of starting a second copy, unless `another` is true (copies of one pin share the files they save beside themselves). A start that quits within two seconds is reported with its exit code and last output. It runs the code the builder wrote, so it needs the person's consent.",
             beginner: "Opens a version you kept.",
             toolset: Toolset::Projects,
-            effects: Effects::LAUNCHES_PROCESS.union(Effects::EXECUTES_FOREIGN_CODE),
+            effects: Effects::LAUNCHES_PROCESS.union(Effects::EXECUTES_FOREIGN_CODE).union(Effects::WRITES_FILESYSTEM),
             requires: Requires::Nothing,
             input_schema: schema_of::<OpenParams>,
             run: project_pin_open,
@@ -51,10 +51,10 @@ pub fn specs() -> Vec<ToolSpec> {
         ToolSpec {
             id: "project_pin_stop",
             title: "Stop a pinned build",
-            summary: "Close what a pin started in this session (every copy of it).",
+            summary: "Close what a pin started (every copy of it), including a Linux program recorded before a restart.",
             beginner: "Closes a version you opened.",
             toolset: Toolset::Projects,
-            effects: Effects::MUTATES_SESSION,
+            effects: Effects::MUTATES_SESSION.union(Effects::WRITES_FILESYSTEM),
             requires: Requires::Nothing,
             input_schema: schema_of::<PinParams>,
             run: project_pin_stop,
@@ -187,37 +187,59 @@ pub(crate) fn start(ctx: &mut Ctx<'_>, app: &Path, log: &Path, another: bool, la
         return Err(ToolError::new(ErrorCode::NotFound, "There's nothing to start: no built program here.")
             .with_remediation("Finish a build first (rebuild), or open the folder to look."));
     };
-    start_program(ctx, app, log, another, label, (program, args))
+    let (result, _) = start_program(ctx, app, log, another, label, (program, args));
+    result
 }
 
-/// Start a program from `app` through the run list, logging to `log`. The program is made absolute
-/// first because the child runs with `app` as its working directory.
-fn start_program(ctx: &mut Ctx<'_>, app: &Path, log: &Path, another: bool, label: &str, (program, args): (PathBuf, Vec<String>)) -> Result<Value, ToolError> {
-    if let Some(dir) = log.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| ToolError::io(dir.display(), e))?;
+/// Start a program from `app` through the run list, logging to `log`. Returns the result and the
+/// leader mark captured immediately after spawn, before the quick-exit wait.
+fn start_program(
+    ctx: &mut Ctx<'_>,
+    app: &Path,
+    log: &Path,
+    another: bool,
+    label: &str,
+    (program, args): (PathBuf, Vec<String>),
+) -> (Result<Value, ToolError>, Option<ProcessMark>) {
+    if let Some(dir) = log.parent()
+        && let Err(e) = std::fs::create_dir_all(dir)
+    {
+        return (Err(ToolError::io(dir.display(), e)), None);
     }
     let program = crate::outputs::absolute_program(&program);
     let launch = Launch::new(&program).args(&args).cwd(app).hide_console().log_to(log).label(label).remediation("Open the folder and start it by hand.");
-    let (launched, quit) = match runs(ctx).open(app, launch, another)? {
-        Opened::AlreadyRunning(l) => return Ok(json!({"already_running": true, "pid": l.pid(), "started": program.display().to_string()})),
-        Opened::Started { launched, quit } => (launched, quit),
+    let opened = match runs(ctx).open(app, launch, another) {
+        Ok(opened) => opened,
+        Err(e) => return (Err(e), None),
+    };
+    let (launched, quit, mark) = match opened {
+        Opened::AlreadyRunning(l) => {
+            return (Ok(json!({"already_running": true, "pid": l.pid(), "started": program.display().to_string()})), process_mark(l.pid()));
+        }
+        Opened::Started { launched, quit, mark } => (launched, quit, mark),
     };
     let last_output = pins::tail(log);
     match quit {
         Some(ended) if ended.code != Some(0) => {
             let code = ended.code.map_or_else(|| "it was stopped".to_string(), |c| format!("exit code {c}"));
             let said = if last_output.is_empty() { String::new() } else { format!(" It printed:\n{last_output}") };
-            Err(ToolError::new(ErrorCode::ProgramFailed, format!("{label} closed straight away ({code}).{said}"))
-                .with_remediation(format!("Its whole output is in {}.", log.display())))
+            (
+                Err(ToolError::new(ErrorCode::ProgramFailed, format!("{label} closed straight away ({code}).{said}"))
+                    .with_remediation(format!("Its whole output is in {}.", log.display()))),
+                mark,
+            )
         }
-        _ => Ok(json!({
-            "already_running": false,
-            "started": program.display().to_string(),
-            "args": args,
-            "pid": launched.pid(),
-            "closed_at_once": quit.map(|e| json!({"code": e.code, "after_ms": e.after.as_millis() as u64})),
-            "last_output": quit.map(|_| last_output),
-        })),
+        _ => (
+            Ok(json!({
+                "already_running": false,
+                "started": program.display().to_string(),
+                "args": args,
+                "pid": launched.pid(),
+                "closed_at_once": quit.map(|e| json!({"code": e.code, "after_ms": e.after.as_millis() as u64})),
+                "last_output": quit.map(|_| last_output),
+            })),
+            mark,
+        ),
     }
 }
 
@@ -256,13 +278,19 @@ fn project_pins_list(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, Too
         for pin in pins::list(ws) {
             copied_bytes = copied_bytes.saturating_add(pin.bytes);
             let running = runs.running(&pin.app_dir(ws));
+            let mut pids: Vec<u32> = running.iter().map(|l| l.pid()).collect();
+            for mark in pin.running_runs() {
+                if !pids.contains(&mark.pid) {
+                    pids.push(mark.pid);
+                }
+            }
             out.push(json!({
                 "project": ws.root.display().to_string(),
                 "project_name": ws.manifest.name,
                 "pin": pin,
                 "folder": pin.dir(ws).display().to_string(),
-                "running": !running.is_empty(),
-                "pids": running.iter().map(|l| l.pid()).collect::<Vec<_>>(),
+                "running": !pids.is_empty(),
+                "pids": pids,
             }));
         }
     }
@@ -272,11 +300,55 @@ fn project_pins_list(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, Too
 fn project_pin_open(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError> {
     let p: OpenParams = parse_params(params)?;
     let ws = open_project(&p.project)?;
-    let pin = pins::get(&ws, p.pin)?;
+    let _lock = pins::lock(&ws, p.pin)?;
+    let mut pin = pins::get(&ws, p.pin)?;
+    pins::ensure_current(&pin)?;
+    let mut changed = pin.prune_runs();
+    if !p.another
+        && let Some(mark) = pin.running_runs().into_iter().next()
+    {
+        if changed {
+            pins::save(&ws, &pin)?;
+        }
+        return Ok(ToolOutput::Value(json!({"already_running": true, "pid": mark.pid, "pin": pin.id})));
+    }
     let launch = pin.launch(&ws, godot(ctx).as_deref())?;
-    let mut out = start_program(ctx, &pin.app_dir(&ws), &pin.log_path(&ws), p.another, &pin.name, launch)?;
+    let (result, mark) = start_program(ctx, &pin.app_dir(&ws), &pin.log_path(&ws), p.another, &pin.name, launch);
+    if let Some(mark) = mark {
+        let live = process_group_members(&mark);
+        let record = match &live {
+            Ok(members) => !members.is_empty(),
+            Err(_) => true,
+        };
+        if record {
+            let members = live.as_ref().map(Vec::as_slice).unwrap_or(&[]);
+            if pin.remember_run(&mark, members) {
+                changed = true;
+            }
+            if live.is_err() {
+                for run in &mut pin.runs {
+                    if run.pid == mark.pid && run.start == mark.start && run.boot == mark.boot && !run.uncertain {
+                        run.uncertain = true;
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+    let mut out = match result {
+        Ok(out) => out,
+        Err(e) => {
+            if changed {
+                pins::save(&ws, &pin)?;
+            }
+            return Err(e);
+        }
+    };
     if let Some(o) = out.as_object_mut() {
         o.insert("pin".into(), json!(pin.id));
+    }
+    if changed {
+        pins::save(&ws, &pin)?;
     }
     Ok(ToolOutput::Value(out))
 }
@@ -284,14 +356,62 @@ fn project_pin_open(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, Tool
 fn project_pin_stop(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError> {
     let p: PinParams = parse_params(params)?;
     let ws = open_project(&p.project)?;
-    let pin = pins::get(&ws, p.pin)?;
-    let stopped = runs(ctx).stop(&pin.app_dir(&ws));
+    let _lock = pins::lock(&ws, p.pin)?;
+    let mut pin = pins::get(&ws, p.pin)?;
+    pins::ensure_current(&pin)?;
+    let mut stopped = runs(ctx).stop(&pin.app_dir(&ws));
+    let before = pin.runs.len();
+    stopped += stop_recorded(&mut pin.runs, pins::stop_run);
+    if before > 0 {
+        pins::save(&ws, &pin)?;
+    }
     Ok(ToolOutput::Value(json!({"pin": pin.id, "stopped": stopped})))
+}
+
+/// Stop the recorded groups; how many were stopped completely. A group with a surviving member
+/// stays recorded with that member, so listing and deletion keep protecting it and a later stop
+/// can continue.
+fn stop_recorded(runs: &mut Vec<pins::PinRun>, mut stop: impl FnMut(&pins::PinRun) -> (bool, bool, Vec<pins::PinMember>, bool)) -> usize {
+    let mut stopped = 0;
+    let mut keep = Vec::new();
+    for mut run in runs.drain(..) {
+        let (gone, stopped_here, survivors, confirmed) = stop(&run);
+        if !confirmed {
+            for member in survivors {
+                if !run.members.contains(&member) {
+                    run.members.push(member);
+                }
+            }
+            run.uncertain = true;
+            keep.push(run);
+            continue;
+        }
+        if gone {
+            if stopped_here {
+                stopped += 1;
+            }
+            continue;
+        }
+        if survivors.is_empty() {
+            // Defensive: a group that is not confirmed gone keeps its recovery record.
+            run.uncertain = true;
+            keep.push(run);
+        } else {
+            run.members = survivors;
+            run.uncertain = false;
+            keep.push(run);
+        }
+    }
+    *runs = keep;
+    stopped
 }
 
 fn project_pin_rename(_ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolError> {
     let p: RenameParams = parse_params(params)?;
     let ws = open_project(&p.project)?;
+    let _lock = pins::lock(&ws, p.pin)?;
+    let pin = pins::get(&ws, p.pin)?;
+    pins::ensure_current(&pin)?;
     Ok(ToolOutput::Value(json!({"pin": pins::rename(&ws, p.pin, &p.name)?})))
 }
 
@@ -301,9 +421,11 @@ fn project_pin_delete(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, To
         return Err(ToolError::invalid("Removing a pin can't be undone.").with_remediation("Pass confirm: true to remove it."));
     }
     let ws = open_project(&p.project)?;
+    let _lock = pins::lock(&ws, p.pin)?;
     let pin = pins::get(&ws, p.pin)?;
+    pins::ensure_current(&pin)?;
     // An old live pin runs the project's app: what's running there isn't the pin's to keep.
-    if pin.mode.keeps_copy() && !runs(ctx).running(&pin.app_dir(&ws)).is_empty() {
+    if pin.mode.keeps_copy() && (!runs(ctx).running(&pin.app_dir(&ws)).is_empty() || !pin.running_runs().is_empty()) {
         return Err(ToolError::invalid(format!("{} is open.", pin.name)).with_remediation("Close it (project_pin_stop), then remove it."));
     }
     pins::delete(&ws, p.pin)?;
@@ -315,6 +437,29 @@ mod tests {
     use super::*;
     use crate::workspace::TargetRef;
     use crate::{CallOptions, Caller, Consent, Engine};
+
+    #[test]
+    fn a_failed_stop_keeps_a_live_record() {
+        let run = |pid| pins::PinRun { pid, start: "s".into(), boot: "b".into(), members: Vec::new(), uncertain: false };
+        let member = |pid| pins::PinMember { pid, start: "s".into(), boot: "b".into() };
+        let mut runs = vec![run(7)];
+        assert_eq!(stop_recorded(&mut runs, |_| (false, false, vec![member(8)], true)), 0);
+        assert_eq!(runs.len(), 1, "a failed stop keeps the live record");
+        assert_eq!(runs[0].members, vec![member(8)], "the surviving member is kept");
+        let mut runs = vec![run(9)];
+        assert_eq!(stop_recorded(&mut runs, |_| (true, true, Vec::new(), true)), 1);
+        assert!(runs.is_empty(), "a stopped group's record is cleared");
+        let mut runs = vec![run(10)];
+        assert_eq!(stop_recorded(&mut runs, |_| (false, false, Vec::new(), false)), 0);
+        assert_eq!(runs.len(), 1, "an unconfirmed group keeps its recovery record");
+        assert!(runs[0].uncertain);
+        let mut runs = vec![run(11)];
+        assert_eq!(stop_recorded(&mut runs, |_| (false, false, vec![member(12)], false)), 0);
+        assert_eq!(runs[0].members, vec![member(12)], "a survivor from an unconfirmed stop is kept");
+        let mut runs = vec![run(13)];
+        assert_eq!(stop_recorded(&mut runs, |_| (true, false, Vec::new(), true)), 0);
+        assert!(runs.is_empty(), "an already-gone record is cleared but not counted");
+    }
 
     #[cfg(unix)]
     #[test]
