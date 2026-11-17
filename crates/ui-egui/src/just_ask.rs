@@ -27,15 +27,21 @@ pub struct Asked {
     pub collapsed: bool,
     /// Scroll to it on the next frame: it was just asked, or its answer just came.
     reveal: bool,
+    /// Asked in Deep mode, so the answer may hold what's inside the original (as kept).
+    pub deep: bool,
 }
 
 impl From<AskedQuestion> for Asked {
     /// One kept from before, folded away.
     fn from(a: AskedQuestion) -> Self {
         let answer = Answer { text: a.answer, from_session: a.from_session, backend: a.backend, cost_usd: a.cost_usd };
-        Asked { question: a.question, answer: Some(Ok(answer)), after: a.after, collapsed: true, reveal: false }
+        Asked { question: a.question, answer: Some(Ok(answer)), after: a.after, collapsed: true, reveal: false, deep: a.deep }
     }
 }
+
+/// How much of an answer "Make this change" puts in its request: as much as the builder is told of
+/// a Just-ask answer (`JUST_ASKED_ANSWER_CHARS` in the rebuild brief).
+const ANSWER_CHARS: usize = 1500;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Answer {
@@ -89,7 +95,8 @@ impl CraftApp {
         self.load_asked(&ws);
         let root = ws.root;
         let after = self.state.feed.len();
-        self.asked.entry(root.clone()).or_default().push(Asked { question: question.clone(), answer: None, after, collapsed: false, reveal: true });
+        let deep = self.settings.deep_mode;
+        self.asked.entry(root.clone()).or_default().push(Asked { question: question.clone(), answer: None, after, collapsed: false, reveal: true, deep });
         self.act("rebuild_question_ask", json!({"project": root, "question": question}), tr("Ask about the build"));
     }
 
@@ -132,15 +139,45 @@ impl CraftApp {
         }
     }
 
+    /// "Make this change" on an answer: the request, carrying what the answer suggested, goes in the
+    /// prompt box (above anything already typed) with the box on "Change it", and waits there to be
+    /// read, edited and sent. The builder is told a Just-ask answer only once and only the latest
+    /// few, so the request says what it was. A Deep answer stays out of a Clean room request, as it
+    /// stays out of what a Clean room builder is told.
+    pub fn make_this_change(&mut self, asked: &Asked) {
+        let question = asked.question.as_str();
+        let answer = match &asked.answer {
+            Some(Ok(a)) if self.settings.deep_mode || !asked.deep => Some(a.text.trim()),
+            _ => None,
+        };
+        let request = match answer {
+            Some(text) => {
+                let cut =
+                    if text.chars().count() > ANSWER_CHARS { format!("{}…", text.chars().take(ANSWER_CHARS).collect::<String>()) } else { text.to_string() };
+                // Outside format!, where `cargo xtask i18n-coverage` finds it.
+                let heading = trf("Make only this change you suggested when I asked \"{question}\":", &[("question", question)]);
+                format!("{heading}\n\n{cut}")
+            }
+            None => trf("Make only the change you suggested for: \"{question}\"", &[("question", question)]),
+        };
+        let input = &mut self.state.project_input;
+        *input = if input.trim().is_empty() { request } else { format!("{request}\n{input}") };
+        self.state.just_ask = false;
+        self.state.focus_prompt = true;
+        self.toast(tr("Switched to Change it"), false);
+    }
+
     fn waiting_question(&mut self, root: &Path, question: Option<&str>) -> Option<&mut Asked> {
         self.asked.get_mut(root)?.iter_mut().find(|a| a.answer.is_none() && question.is_none_or(|q| a.question == q))
     }
 }
 
 /// One question in the conversation: a line that folds its answer away. A long answer is read by
-/// scrolling the conversation, so it never pushes the prompt box off the screen.
-pub fn card(ui: &mut Ui, a: &mut Asked, glossary: bool) {
+/// scrolling the conversation, so it never pushes the prompt box off the screen. True when
+/// "Make this change" was pressed on its answer.
+pub fn card(ui: &mut Ui, a: &mut Asked, glossary: bool) -> bool {
     let t = Tokens::get(ui.ctx());
+    let mut make = false;
     let shown = widgets::card(&t).show(ui, |ui| {
         ui.set_width(ui.available_width());
         let mut toggle = false;
@@ -172,6 +209,8 @@ pub fn card(ui: &mut Ui, a: &mut Asked, glossary: bool) {
                         .color(t.text_faint)
                         .size(theme::SMALL),
                 );
+                ui.add_space(theme::space::XS);
+                make = widgets::secondary(ui, Some("wand-sparkles"), "Make this change").clicked();
             }
             Some(Err(why)) => {
                 ui.add(egui::Label::new(RichText::new(format!("{} {why}", tr("Couldn't answer:"))).color(t.danger)).wrap());
@@ -183,6 +222,7 @@ pub fn card(ui: &mut Ui, a: &mut Asked, glossary: bool) {
         ui.scroll_to_rect(shown.response.rect, Some(egui::Align::Min));
     }
     ui.add_space(chat::MESSAGE_GAP);
+    make
 }
 
 #[cfg(test)]
@@ -193,7 +233,7 @@ mod tests {
 
     #[test]
     fn prompts_keep_questions_where_they_were_asked() {
-        let asked = |q: &str, after| Asked { question: q.into(), answer: None, after, collapsed: false, reveal: false };
+        let asked = |q: &str, after| Asked { question: q.into(), answer: None, after, collapsed: false, reveal: false, deep: false };
         let user = |t: &str| FeedItem::User(UserItem::Text(t.into()));
         let feed = [user("A notes app"), FeedItem::Paused, user("Make it blue\n(1 picture attached)")];
         let list = [asked("why Rust", 1), asked("where are the files", 3)];
@@ -205,7 +245,7 @@ mod tests {
 
     #[test]
     fn a_prompt_brought_back_with_up_keeps_its_pictures() {
-        let asked = |q: &str, after| Asked { question: q.into(), answer: None, after, collapsed: false, reveal: false };
+        let asked = |q: &str, after| Asked { question: q.into(), answer: None, after, collapsed: false, reveal: false, deep: false };
         // The feed stores the shown text with its "(n pictures attached)" line, and the
         // pictures travel with the same UserItem.
         let pics = [std::path::PathBuf::from("attachments/picture-1.png")];
@@ -233,6 +273,97 @@ mod tests {
             "not_kept": null
         })));
         assert!(app.state.toasts.iter().any(|(t, err)| !*err && t.contains("Off") && t.contains("Claude")), "{:?}", app.state.toasts);
+    }
+
+    fn answered(question: &str, answer: &str, deep: bool) -> Asked {
+        let answer = Answer { text: answer.into(), from_session: true, backend: "Claude".into(), cost_usd: None };
+        Asked { question: question.into(), answer: Some(Ok(answer)), after: 0, collapsed: false, reveal: false, deep }
+    }
+
+    /// "Make this change" writes the request, with what the answer suggested, into the box and
+    /// switches it to "Change it", but sends nothing: the person reads it, edits it or flips back to
+    /// "Just ask" before anything is built. The builder may have been told the answer already, or
+    /// never (an older one), so the request carries it.
+    #[test]
+    fn make_this_change_fills_the_box_with_the_answer_without_sending() {
+        let mut app = crate::demo::app(crate::demo::engine(craft_anything_engine::Mode::Beginner, true));
+        app.state.just_ask = true;
+        let feed = app.state.feed.len();
+        app.make_this_change(&answered("why is it cramped on phones?", "Let the card shrink to the screen.", false));
+        assert_eq!(
+            app.state.project_input,
+            "Make only this change you suggested when I asked \"why is it cramped on phones?\":\n\nLet the card shrink to the screen."
+        );
+        assert!(!app.state.just_ask, "switched to Change it");
+        assert!(app.state.focus_prompt, "the cursor goes to the box");
+        assert!(app.state.toasts.iter().any(|(t, err)| !*err && t == "Switched to Change it"), "{:?}", app.state.toasts);
+        assert_eq!(app.state.feed.len(), feed, "nothing was sent");
+    }
+
+    #[test]
+    fn make_this_change_keeps_what_was_already_typed() {
+        let mut app = crate::demo::app(crate::demo::engine(craft_anything_engine::Mode::Beginner, true));
+        app.state.project_input = "and make the buttons bigger".into();
+        app.make_this_change(&answered("why is it cramped?", "Shrink the card.", false));
+        assert_eq!(
+            app.state.project_input,
+            "Make only this change you suggested when I asked \"why is it cramped?\":\n\nShrink the card.\nand make the buttons bigger"
+        );
+    }
+
+    /// A long answer is cut where the builder's own copy of Just-ask answers is cut.
+    #[test]
+    fn make_this_change_cuts_a_long_answer() {
+        let mut app = crate::demo::app(crate::demo::engine(craft_anything_engine::Mode::Beginner, true));
+        app.make_this_change(&answered("why?", &"é".repeat(ANSWER_CHARS + 10), false));
+        let answer = app.state.project_input.split("\n\n").nth(1).unwrap_or_default();
+        assert_eq!(answer, format!("{}…", "é".repeat(ANSWER_CHARS)));
+    }
+
+    /// Clean room means clean room: an answer asked in Deep mode may hold what's inside the
+    /// original, so a Clean room request names only the question, as the builder is told.
+    #[test]
+    fn a_deep_answer_stays_out_of_a_clean_room_request() {
+        let mut app = crate::demo::app(crate::demo::engine(craft_anything_engine::Mode::Beginner, true));
+        app.settings.deep_mode = false;
+        app.make_this_change(&answered("why?", "Inside the original it does X.", true));
+        assert_eq!(app.state.project_input, "Make only the change you suggested for: \"why?\"");
+        app.state.project_input.clear();
+        app.settings.deep_mode = true;
+        app.make_this_change(&answered("why?", "Inside the original it does X.", true));
+        assert_eq!(app.state.project_input, "Make only this change you suggested when I asked \"why?\":\n\nInside the original it does X.");
+    }
+
+    /// The button is on an answer, never on a question still waiting or one that couldn't be answered.
+    #[test]
+    fn only_an_answered_question_offers_make_this_change() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let answered = Ok(Answer { text: "The card is too wide.".into(), from_session: true, backend: "Claude".into(), cost_usd: None });
+        for (answer, offered) in [(Some(answered), true), (None, false), (Some(Err("no AI".to_string())), false)] {
+            let mut a = Asked { question: "why?".into(), answer, after: 0, collapsed: false, reveal: false, deep: false };
+            // (fonts ready, clicked)
+            let mut h = Harness::new_ui_state(
+                move |ui, (ready, clicked): &mut (bool, bool)| {
+                    theme::install_fonts(ui.ctx());
+                    // Installed fonts become active at the next pass, and the question is set in
+                    // the "semibold" family: draw it once they are.
+                    if !std::mem::replace(ready, true) {
+                        ui.ctx().request_repaint();
+                        return;
+                    }
+                    *clicked |= card(ui, &mut a, false);
+                },
+                (false, false),
+            );
+            // A question still waiting shows a spinner, which never stops repainting.
+            h.run_steps(3);
+            assert_eq!(h.query_by_label("Make this change").is_some(), offered);
+            if offered {
+                h.get_by_label("Make this change").click();
+                h.run_steps(2);
+                assert!(h.state().1, "the click reaches the project screen");
+            }
+        }
     }
 
     #[test]
