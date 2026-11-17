@@ -1493,3 +1493,15 @@ You're up to date.	已是最新版本。
 Forget a website sign-in	忘记网站登录
 Sign in to a website	登录网站
 Some shared files could not be hard-linked and were copied instead ({size}).	部分共享文件无法建立硬链接，已改为复制（{size}）。
+Earlier investigations	以前的调查
+Continue an earlier investigation	继续以前的调查
+Read earlier investigations	读取以前的调查
+Open the investigation	打开调查
+Stop the answer first, then open the investigation.	请先停止回答，再打开该调查。
+Carrying on with an earlier investigation: {question}	继续以前的调查：{question}
+Carrying on with an earlier investigation.	继续以前的调查。
+Hide earlier investigations	隐藏以前的调查
+Show earlier investigations	显示以前的调查
+Investigation	调查
+{when} · {evidence} evidence records · {findings} findings	{when} · {evidence} 条证据 · {findings} 个发现
+Couldn't open that investigation.	无法打开该调查。

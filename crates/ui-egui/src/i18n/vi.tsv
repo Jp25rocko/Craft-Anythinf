@@ -1493,3 +1493,15 @@ You're up to date.	Bạn đang dùng phiên bản mới nhất.
 Forget a website sign-in	Quên thông tin đăng nhập của một trang web
 Sign in to a website	Đăng nhập vào một trang web
 Some shared files could not be hard-linked and were copied instead ({size}).	Một số tệp chia sẻ không thể tạo liên kết cứng nên đã được sao chép ({size}).
+Earlier investigations	Các cuộc điều tra trước
+Continue an earlier investigation	Tiếp tục một cuộc điều tra trước
+Read earlier investigations	Đọc các cuộc điều tra trước
+Open the investigation	Mở cuộc điều tra
+Stop the answer first, then open the investigation.	Hãy dừng câu trả lời trước, rồi mở cuộc điều tra.
+Carrying on with an earlier investigation: {question}	Tiếp tục cuộc điều tra trước: {question}
+Carrying on with an earlier investigation.	Tiếp tục một cuộc điều tra trước.
+Hide earlier investigations	Ẩn các cuộc điều tra trước
+Show earlier investigations	Hiện các cuộc điều tra trước
+Investigation	Cuộc điều tra
+{when} · {evidence} evidence records · {findings} findings	{when} · {evidence} bằng chứng · {findings} phát hiện
+Couldn't open that investigation.	Không mở được cuộc điều tra đó.

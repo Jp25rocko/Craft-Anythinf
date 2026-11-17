@@ -1493,3 +1493,15 @@ You're up to date.	최신 버전입니다.
 Forget a website sign-in	웹사이트 로그인 정보 지우기
 Sign in to a website	웹사이트에 로그인
 Some shared files could not be hard-linked and were copied instead ({size}).	일부 공유 파일은 하드 링크할 수 없어 복사했습니다 ({size}).
+Earlier investigations	이전 조사
+Continue an earlier investigation	이전 조사 이어서 하기
+Read earlier investigations	이전 조사 읽기
+Open the investigation	조사 열기
+Stop the answer first, then open the investigation.	먼저 답변을 멈춘 다음 조사를 여세요.
+Carrying on with an earlier investigation: {question}	이전 조사를 이어서 합니다: {question}
+Carrying on with an earlier investigation.	이전 조사를 이어서 합니다.
+Hide earlier investigations	이전 조사 숨기기
+Show earlier investigations	이전 조사 보기
+Investigation	조사
+{when} · {evidence} evidence records · {findings} findings	{when} · 증거 {evidence}개 · 발견 {findings}개
+Couldn't open that investigation.	그 조사를 열 수 없습니다.

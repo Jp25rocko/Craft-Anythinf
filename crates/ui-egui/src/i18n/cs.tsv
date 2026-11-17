@@ -1493,3 +1493,15 @@ You're up to date.	Máte nejnovější verzi.
 Forget a website sign-in	Zapomenout přihlášení k webu
 Sign in to a website	Přihlásit se na web
 Some shared files could not be hard-linked and were copied instead ({size}).	Některé sdílené soubory nešlo pevně propojit a byly zkopírovány ({size}).
+Earlier investigations	Dřívější šetření
+Continue an earlier investigation	Pokračovat v dřívějším šetření
+Read earlier investigations	Načíst dřívější šetření
+Open the investigation	Otevřít šetření
+Stop the answer first, then open the investigation.	Nejdřív zastavte odpověď a pak otevřete vyšetřování.
+Carrying on with an earlier investigation: {question}	Pokračujeme v dřívějším šetření: {question}
+Carrying on with an earlier investigation.	Pokračujeme v dřívějším šetření.
+Hide earlier investigations	Skrýt dřívější šetření
+Show earlier investigations	Zobrazit dřívější šetření
+Investigation	Šetření
+{when} · {evidence} evidence records · {findings} findings	{when} · důkazů: {evidence} · zjištění: {findings}
+Couldn't open that investigation.	Toto šetření se nepodařilo otevřít.

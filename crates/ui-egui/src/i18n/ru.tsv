@@ -1493,3 +1493,15 @@ You're up to date.	Установлена последняя версия.
 Forget a website sign-in	Забыть вход на сайт
 Sign in to a website	Войти на сайт
 Some shared files could not be hard-linked and were copied instead ({size}).	Некоторые общие файлы не удалось связать жёсткими ссылками, и они были скопированы ({size}).
+Earlier investigations	Прежние исследования
+Continue an earlier investigation	Продолжить прежнее исследование
+Read earlier investigations	Прочитать прежние исследования
+Open the investigation	Открыть исследование
+Stop the answer first, then open the investigation.	Сначала остановите ответ, затем откройте расследование.
+Carrying on with an earlier investigation: {question}	Продолжаем прежнее исследование: {question}
+Carrying on with an earlier investigation.	Продолжаем прежнее исследование.
+Hide earlier investigations	Скрыть прежние исследования
+Show earlier investigations	Показать прежние исследования
+Investigation	Исследование
+{when} · {evidence} evidence records · {findings} findings	{when} · доказательств: {evidence} · выводов: {findings}
+Couldn't open that investigation.	Не удалось открыть это исследование.

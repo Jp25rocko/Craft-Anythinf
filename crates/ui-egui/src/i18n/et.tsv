@@ -1493,3 +1493,15 @@ You're up to date.	Sul on uusim versioon.
 Forget a website sign-in	Unusta veebisaidi sisselogimine
 Sign in to a website	Logi veebisaidile sisse
 Some shared files could not be hard-linked and were copied instead ({size}).	Mõnda jagatud faili ei saanud kõvasti linkida ja need kopeeriti ({size}).
+Earlier investigations	Varasemad uurimised
+Continue an earlier investigation	Jätka varasemat uurimist
+Read earlier investigations	Loe varasemaid uurimisi
+Open the investigation	Ava uurimine
+Stop the answer first, then open the investigation.	Peata esmalt vastus ja ava siis uurimine.
+Carrying on with an earlier investigation: {question}	Jätkame varasemat uurimist: {question}
+Carrying on with an earlier investigation.	Jätkame varasemat uurimist.
+Hide earlier investigations	Peida varasemad uurimised
+Show earlier investigations	Näita varasemaid uurimisi
+Investigation	Uurimine
+{when} · {evidence} evidence records · {findings} findings	{when} · tõendeid: {evidence} · leide: {findings}
+Couldn't open that investigation.	Seda uurimist ei õnnestunud avada.

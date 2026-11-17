@@ -1493,3 +1493,15 @@ You're up to date.	已是最新版本。
 Forget a website sign-in	忘記網站登入
 Sign in to a website	登入網站
 Some shared files could not be hard-linked and were copied instead ({size}).	部分共用檔案無法建立硬連結，已改為複製（{size}）。
+Earlier investigations	先前的調查
+Continue an earlier investigation	繼續先前的調查
+Read earlier investigations	讀取先前的調查
+Open the investigation	開啟調查
+Stop the answer first, then open the investigation.	請先停止回答，再開啟該調查。
+Carrying on with an earlier investigation: {question}	繼續先前的調查：{question}
+Carrying on with an earlier investigation.	繼續先前的調查。
+Hide earlier investigations	隱藏先前的調查
+Show earlier investigations	顯示先前的調查
+Investigation	調查
+{when} · {evidence} evidence records · {findings} findings	{when} · {evidence} 筆證據 · {findings} 項發現
+Couldn't open that investigation.	無法開啟該調查。

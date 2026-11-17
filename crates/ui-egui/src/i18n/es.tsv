@@ -1493,3 +1493,15 @@ You're up to date.	Tienes la última versión.
 Forget a website sign-in	Olvidar el inicio de sesión de un sitio web
 Sign in to a website	Iniciar sesión en un sitio web
 Some shared files could not be hard-linked and were copied instead ({size}).	Algunos archivos compartidos no se pudieron enlazar de forma rígida y se copiaron ({size}).
+Earlier investigations	Investigaciones anteriores
+Continue an earlier investigation	Continuar una investigación anterior
+Read earlier investigations	Leer las investigaciones anteriores
+Open the investigation	Abrir la investigación
+Stop the answer first, then open the investigation.	Detén primero la respuesta y luego abre la investigación.
+Carrying on with an earlier investigation: {question}	Seguimos con una investigación anterior: {question}
+Carrying on with an earlier investigation.	Seguimos con una investigación anterior.
+Hide earlier investigations	Ocultar las investigaciones anteriores
+Show earlier investigations	Mostrar las investigaciones anteriores
+Investigation	Investigación
+{when} · {evidence} evidence records · {findings} findings	{when} · {evidence} pruebas · {findings} hallazgos
+Couldn't open that investigation.	No se pudo abrir esa investigación.

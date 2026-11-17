@@ -1493,3 +1493,15 @@ You're up to date.	En güncel sürümdesiniz.
 Forget a website sign-in	Bir web sitesinin oturumunu unut
 Sign in to a website	Bir web sitesinde oturum aç
 Some shared files could not be hard-linked and were copied instead ({size}).	Bazı paylaşılan dosyalar sabit bağlantıyla bağlanamadı ve kopyalandı ({size}).
+Earlier investigations	Önceki incelemeler
+Continue an earlier investigation	Önceki bir incelemeye devam et
+Read earlier investigations	Önceki incelemeleri oku
+Open the investigation	İncelemeyi aç
+Stop the answer first, then open the investigation.	Önce yanıtı durdurun, sonra incelemeyi açın.
+Carrying on with an earlier investigation: {question}	Önceki bir incelemeye devam ediliyor: {question}
+Carrying on with an earlier investigation.	Önceki bir incelemeye devam ediliyor.
+Hide earlier investigations	Önceki incelemeleri gizle
+Show earlier investigations	Önceki incelemeleri göster
+Investigation	İnceleme
+{when} · {evidence} evidence records · {findings} findings	{when} · {evidence} kanıt · {findings} bulgu
+Couldn't open that investigation.	Bu inceleme açılamadı.

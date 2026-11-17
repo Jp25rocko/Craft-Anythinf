@@ -1493,3 +1493,15 @@ You're up to date.	უახლეს ვერსიას იყენებ�
 Forget a website sign-in	ვებსაიტზე შესვლის დავიწყება
 Sign in to a website	ვებსაიტზე შესვლა
 Some shared files could not be hard-linked and were copied instead ({size}).	ზოგიერთი საერთო ფაილი მყარი ბმულით ვერ დაკავშირდა და დაკოპირდა ({size}).
+Earlier investigations	წინა გამოძიებები
+Continue an earlier investigation	წინა გამოძიების გაგრძელება
+Read earlier investigations	წინა გამოძიებების წაკითხვა
+Open the investigation	გამოძიების გახსნა
+Stop the answer first, then open the investigation.	ჯერ შეაჩერეთ პასუხი, შემდეგ გახსენით კვლევა.
+Carrying on with an earlier investigation: {question}	ვაგრძელებთ წინა გამოძიებას: {question}
+Carrying on with an earlier investigation.	ვაგრძელებთ წინა გამოძიებას.
+Hide earlier investigations	წინა გამოძიებების დამალვა
+Show earlier investigations	წინა გამოძიებების ჩვენება
+Investigation	გამოძიება
+{when} · {evidence} evidence records · {findings} findings	{when} · მტკიცებულება: {evidence} · მიგნება: {findings}
+Couldn't open that investigation.	ამ გამოძიების გახსნა ვერ მოხერხდა.

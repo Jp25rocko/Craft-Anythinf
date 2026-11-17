@@ -1493,3 +1493,15 @@ You're up to date.	Du bist auf dem neuesten Stand.
 Forget a website sign-in	Anmeldung bei einer Website vergessen
 Sign in to a website	Bei einer Website anmelden
 Some shared files could not be hard-linked and were copied instead ({size}).	Einige geteilte Dateien konnten nicht hart verlinkt werden und wurden kopiert ({size}).
+Earlier investigations	Frühere Untersuchungen
+Continue an earlier investigation	Eine frühere Untersuchung fortsetzen
+Read earlier investigations	Frühere Untersuchungen lesen
+Open the investigation	Untersuchung öffnen
+Stop the answer first, then open the investigation.	Halte zuerst die Antwort an und öffne dann die Untersuchung.
+Carrying on with an earlier investigation: {question}	Weiter mit einer früheren Untersuchung: {question}
+Carrying on with an earlier investigation.	Weiter mit einer früheren Untersuchung.
+Hide earlier investigations	Frühere Untersuchungen ausblenden
+Show earlier investigations	Frühere Untersuchungen anzeigen
+Investigation	Untersuchung
+{when} · {evidence} evidence records · {findings} findings	{when} · {evidence} Belege · {findings} Erkenntnisse
+Couldn't open that investigation.	Diese Untersuchung ließ sich nicht öffnen.
