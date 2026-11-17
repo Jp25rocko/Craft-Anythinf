@@ -571,16 +571,15 @@ pub fn har_from_network(requests: &[Value], started: &str) -> Value {
     })
 }
 
-/// W3C-style headers from a name-to-value map the tools kept. The tools return
-/// `{"kept": {...}, "credentials_present": [...]}` for an outline, or a flat map of every value;
-/// both are read, and a value that isn't text (a length, a list) is dropped rather than guessed.
-fn har_headers(value: Option<&Value>) -> Vec<Value> {
-    let Some(Value::Object(o)) = value else { return Vec::new() };
-    let kept = match o.get("kept") {
-        Some(Value::Object(kept)) => kept,
-        _ => o,
-    };
-    kept.iter().filter_map(|(name, v)| v.as_str().map(|v| json!({"name": name, "value": v}))).collect()
+/// Read a flat header map or the retained values in an outlined one.
+fn har_header_map(value: Option<&Value>) -> Option<&Map<String, Value>> {
+    let map = value?.as_object()?;
+    Some(map.get("kept").and_then(Value::as_object).unwrap_or(map))
+}
+
+/// Write retained textual headers as HAR name-value pairs.
+fn har_headers(headers: Option<&Map<String, Value>>) -> Vec<Value> {
+    headers.into_iter().flatten().filter_map(|(name, v)| v.as_str().map(|v| json!({"name": name, "value": v}))).collect()
 }
 
 /// The text of a body the tools kept, if it is whole: a body cut at the cap would be replayed as
@@ -595,18 +594,25 @@ fn har_body<'a>(r: &'a Value, key: &str) -> Option<&'a str> {
 
 fn har_entry(r: &Value, started: &str) -> Value {
     let text = |key: &str| r.get(key).and_then(Value::as_str).unwrap_or_default();
+    let request_headers = har_header_map(r.get("request_header_values").or_else(|| r.get("request_headers")));
     let mut request = json!({
         "method": if text("method").is_empty() { "GET" } else { text("method") },
         "url": text("url"),
         "httpVersion": "HTTP/1.1",
-        "headers": har_headers(r.get("request_header_values").or_else(|| r.get("request_headers"))),
+        "headers": har_headers(request_headers),
         "queryString": [],
         "cookies": [],
         "headersSize": -1,
         "bodySize": -1,
     });
     if let Some(body) = har_body(r, "request_body") {
-        request["postData"] = json!({"mimeType": text("mime_type"), "text": body});
+        let mime = request_headers
+            .into_iter()
+            .flatten()
+            .filter(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+            .find_map(|(_, value)| value.as_str())
+            .unwrap_or_default();
+        request["postData"] = json!({"mimeType": mime, "text": body});
     }
     let mut content = json!({"size": 0, "mimeType": text("mime_type")});
     if let Some(body) = har_body(r, "response_body") {
@@ -621,7 +627,7 @@ fn har_entry(r: &Value, started: &str) -> Value {
             "status": r.get("status").and_then(Value::as_i64).unwrap_or(0),
             "statusText": "",
             "httpVersion": "HTTP/1.1",
-            "headers": har_headers(r.get("response_header_values").or_else(|| r.get("response_headers"))),
+            "headers": har_headers(har_header_map(r.get("response_header_values").or_else(|| r.get("response_headers")))),
             "cookies": [],
             "content": content,
             "redirectURL": "",

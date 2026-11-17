@@ -5,7 +5,8 @@ websites, phones) with evidence-backed answers, then helps them rebuild it. It s
 an MCP server, all driven by one engine. Display name **Craft Anything**; machine names `craft-anything-*`; bundle id
 `ai.storyteller.craft-anything`. Standards shared across the Craft apps live in
 [storytold/craft-contrib](https://github.com/storytold/craft-contrib) (`standards/house-rules-core.md` and
-`standards/house-rules-rust.md`); follow them. Repos never share code.
+`standards/house-rules-rust.md`); follow them. Apps do not depend on sibling app crates; reusable code belongs in
+craft-libs.
 
 **Original work only:** never copy code, scripts, schemas, names, assets or wording from another project, and
 never name other reverse-engineering products in source, docs, UI or commit messages.
@@ -171,3 +172,7 @@ the devlog is a local scratch record; anything others need goes in the PR, `docs
 Own target dir (`CARGO_TARGET_DIR=target/agent-<name>`), own files. Shared files (`engine/src/tools/mod.rs`,
 `engine/src/lib.rs`, workspace `Cargo.toml`) get small surgical edits; re-read right before editing. Write manifests
 atomically (temp file outside `crates/`, then `mv`). If someone else's edit breaks the build, wait and retry.
+
+## Shared Craft libraries
+
+Before adding or changing reusable file-format, codec, protocol or UI code, check [craft-libs](https://github.com/storytold/craft-libs) and existing contributor work; reuse its public APIs or extend the appropriate shared library instead of adding an app-local duplicate, keeping app-specific policy and model mapping local and preserving compatibility, security limits and regression coverage.

@@ -1279,6 +1279,7 @@ dependencies = [
  "craft-anything-js",
  "craft-anything-platform",
  "craft-anything-testkit",
+ "craft-sniff",
  "dirs",
  "hex",
  "image",
@@ -1338,6 +1339,7 @@ version = "0.6.1"
 dependencies = [
  "bzip2-rs",
  "craft-anything-testkit",
+ "craft-mime",
  "craft-plist",
  "lzma-rs",
  "miniz_oxide 0.8.9",
@@ -1487,12 +1489,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-codepage"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=de97c35f2b2af01c62371647e57a6affeab456fd#de97c35f2b2af01c62371647e57a6affeab456fd"
+
+[[package]]
+name = "craft-mime"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=de97c35f2b2af01c62371647e57a6affeab456fd#de97c35f2b2af01c62371647e57a6affeab456fd"
+dependencies = [
+ "chrono",
+ "craft-codepage",
+ "encoding_rs",
+]
+
+[[package]]
 name = "craft-plist"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=902a722422583d051093679985793fb94b2af26e#902a722422583d051093679985793fb94b2af26e"
+source = "git+https://github.com/storytold/craft-libs?rev=28561846057d88b8c2454b677856081707109631#28561846057d88b8c2454b677856081707109631"
 dependencies = [
  "thiserror 2.0.21",
 ]
+
+[[package]]
+name = "craft-sniff"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=070005125f0af1a5ae4a59002270e5849505bfc0#070005125f0af1a5ae4a59002270e5849505bfc0"
 
 [[package]]
 name = "craft-update"
@@ -8402,6 +8424,7 @@ dependencies = [
  "craft-anything-engine",
  "proc-macro2",
  "syn 2.0.119",
+ "tempfile",
  "toml 0.9.12+spec-1.1.0",
 ]
 

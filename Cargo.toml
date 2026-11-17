@@ -26,8 +26,11 @@ craft-anything-ui-egui = { path = "crates/ui-egui" }
 craft-anything-testkit = { path = "crates/testkit" }
 
 # external
+# Shared unwrapped standard Base64 encoding; decoding keeps format-specific validation.
+craft-mime = { git = "https://github.com/storytold/craft-libs", rev = "de97c35f2b2af01c62371647e57a6affeab456fd" }
 # XML plist reader; prerequisite craft-libs #1633 (repin after merge).
-craft-plist = { git = "https://github.com/storytold/craft-libs", rev = "902a722422583d051093679985793fb94b2af26e" }
+craft-plist = { git = "https://github.com/storytold/craft-libs", rev = "28561846057d88b8c2454b677856081707109631" }
+craft-sniff = { git = "https://github.com/storytold/craft-libs", rev = "070005125f0af1a5ae4a59002270e5849505bfc0" }
 thiserror = "2"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"

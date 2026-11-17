@@ -801,20 +801,50 @@ fn past_sources(m: &str, sources: usize) -> Option<usize> {
     None
 }
 
-/// Find the `sourceMappingURL` comment near the end of a script.
+/// Find a `sourceMappingURL` on a comment-only line near the end of a script.
 pub fn find_source_mapping_url(js: &str) -> Option<String> {
-    for line in js.lines().rev().take(64) {
-        let t = line.trim();
-        for prefix in ["//#", "//@", "/*#"] {
-            if let Some(rest) = t.strip_prefix(prefix).and_then(|comment| comment.trim_start().strip_prefix("sourceMappingURL=")) {
-                let url = if prefix.starts_with("/*") { rest.strip_suffix("*/").unwrap_or(rest).trim() } else { rest.trim() };
-                if !url.is_empty() && !url.chars().any(char::is_whitespace) {
-                    return Some(url.to_string());
-                }
-            }
+    let terminators = ['\n', '\r', '\u{2028}', '\u{2029}'];
+    // Ignore one trailing terminator, and count CRLF as a single line break.
+    let mut rest = js.strip_suffix("\r\n").or_else(|| js.strip_suffix(terminators)).unwrap_or(js);
+    for _ in 0..64 {
+        let (line, preceding) = if let Some((i, separator)) = rest.rmatch_indices(terminators).next() {
+            let before = rest.get(..i)?;
+            let before = if separator == "\n" { before.strip_suffix('\r').unwrap_or(before) } else { before };
+            (rest.get(i + separator.len()..)?, Some(before))
+        } else {
+            (rest, None)
+        };
+        if let Some(url) = source_mapping_url_on_line(line) {
+            return Some(url.to_string());
         }
+        let Some(preceding) = preceding else { break };
+        rest = preceding;
     }
     None
+}
+
+/// Keep the last valid annotation on a line of comments. A code token ends the search on this line.
+fn source_mapping_url_on_line(mut line: &str) -> Option<&str> {
+    let mut url = None;
+    loop {
+        line = line.trim_start();
+        if line.is_empty() {
+            return url;
+        }
+        if let Some(comment) = line.strip_prefix("//") {
+            return source_mapping_url_in_comment(comment).or(url);
+        }
+        let block = line.strip_prefix("/*")?;
+        let Some((comment, after)) = block.split_once("*/") else { return url };
+        url = source_mapping_url_in_comment(comment).or(url);
+        line = after;
+    }
+}
+
+/// Read a nonempty URL from a complete comment's annotation.
+fn source_mapping_url_in_comment(comment: &str) -> Option<&str> {
+    let url = comment.strip_prefix(['#', '@'])?.trim_start().strip_prefix("sourceMappingURL=")?.trim();
+    (!url.is_empty() && !url.chars().any(char::is_whitespace)).then_some(url)
 }
 
 /// Decode a `data:` URL, including percent escapes and optional base64 content.

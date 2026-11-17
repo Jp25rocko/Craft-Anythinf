@@ -154,9 +154,12 @@ pub(super) fn input_file(ctx: &Ctx<'_>, path: Option<&str>) -> Result<(PathBuf, 
 
 pub(super) fn locate(ctx: &Ctx<'_>, id: &str) -> Result<PathBuf, ToolError> {
     let s = &ctx.session.settings;
-    craft_anything_engines::locate(id, &s.engines.tools, &s.engine_store_dir()).ok_or_else(|| {
-        ToolError::unavailable(format!("{} is not installed.", craft_anything_engines::display_name(id)))
-            .with_remediation(format!("Install {} and set its path in Settings → Engines.", craft_anything_engines::display_name(id)))
+    // The lookup `Requires::Engine` and `engines_list` use, so they agree on what runs.
+    s.engine_path(id).ok_or_else(|| {
+        // The same words as a tool that requires the engine: they say what's wrong with a path
+        // that's set (missing, or a folder without the program) and whether Settings installs it.
+        let (reason, remediation) = s.engine_not_found(id);
+        ToolError::unavailable(reason).with_remediation(remediation)
     })
 }
 

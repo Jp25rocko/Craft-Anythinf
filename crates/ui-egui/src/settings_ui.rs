@@ -345,6 +345,7 @@ fn ai(app: &mut CraftApp, ui: &mut Ui) {
     let (mut pick_model, mut chosen_model, mut close_picker) = (None, None, false);
     let mut chosen_effort = None;
     let mut save_request_rate = None;
+    let mut chosen_tools = None;
     let (mut pick_agent_model, mut chosen_agent_model, mut remote_program) = (None, None, None);
     let (mut tune_models, mut save_tuning) = (Vec::new(), None);
     // A saved API key being replaced or forgotten (the keychain work happens off this frame).
@@ -601,6 +602,38 @@ fn ai(app: &mut CraftApp, ui: &mut Ui) {
                 }
             }
             if b.kind != BackendKind::AgentCli {
+                let list = app.backend_options.get(&b.name).and_then(|o| o.tools).unwrap_or_default();
+                // What Auto works out to for this AI, beside the choice (R5.4).
+                let auto = if craft_anything_ai::runs_here(b) {
+                    tr("Auto: building tools only below a 64k window, every tool from there.")
+                } else {
+                    tr("Auto: every tool, as this AI is a paid service.")
+                };
+                // One change at a time: jobs finish in any order, so a second change's refresh could land before the
+                // first's and Settings would show the older choice. The row waits for the saving job, as the rate does.
+                let job_id = ui.make_persistent_id(("tool-list-job", &b.name));
+                let pending_job = ui.data(|data| data.get_temp::<u64>(job_id));
+                let pending = app.jobs.running().any(|job| Some(job.id) == pending_job);
+                if !pending && pending_job.is_some() {
+                    ui.data_mut(|data| data.remove::<u64>(job_id));
+                }
+                ui.add_enabled_ui(!pending, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        let label = ui.label(tr("Builder's tools"));
+                        widgets::dropdown(("tool-list", &b.name))
+                            .selected_text(list.as_str())
+                            .show_ui(ui, |ui| {
+                                for l in craft_anything_ai::ToolList::ALL {
+                                    if widgets::menu_item(ui, l == list, l.as_str()).clicked() && l != list {
+                                        chosen_tools = Some((b.name.clone(), l, job_id));
+                                    }
+                                }
+                            })
+                            .response
+                            .labelled_by(label.id);
+                        ui.label(RichText::new(auto).color(t.text_faint).size(theme::CAPTION));
+                    });
+                });
                 let saved = app.backend_options.get(&b.name).and_then(|o| o.requests_per_minute).unwrap_or_default();
                 let id = ui.make_persistent_id(("request-rate", &b.name));
                 let saved_text = if saved == 0 { String::new() } else { saved.to_string() };
@@ -743,6 +776,10 @@ fn ai(app: &mut CraftApp, ui: &mut Ui) {
         let job = app.set_requests_per_minute(&name, rate);
         let text = if rate == 0 { String::new() } else { rate.to_string() };
         ui.data_mut(|data| data.insert_temp(id, (text, Some(job))));
+    }
+    if let Some((name, list, id)) = chosen_tools {
+        let job = app.set_tool_list(&name, list);
+        ui.data_mut(|data| data.insert_temp(id, job));
     }
     if let Some((name, key)) = save_key {
         app.save_backend_key(name, key);

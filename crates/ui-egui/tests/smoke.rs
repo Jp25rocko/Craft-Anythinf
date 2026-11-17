@@ -204,6 +204,30 @@ fn turning_on_generated_assets_without_a_fal_key_asks_for_one() {
 }
 
 #[test]
+fn ghidra_is_looked_up_once_and_again_only_when_asked() {
+    let d = tempfile::tempdir().unwrap();
+    let store = d.path().join("engines");
+    let remembered = std::path::PathBuf::from("/remembered/support/analyzeHeadless");
+    let found = remembered.clone();
+    let mut h = harness_sized(egui::vec2(1280.0, 800.0), move || {
+        let mut a = demo::app(demo::engine(Mode::Beginner, true));
+        // An empty engine store, and nowhere else looked in: a lookup finds no Ghidra here.
+        a.settings.engines.store_dir = Some(store);
+        a.settings.engines.only_configured = true;
+        a.ghidra.found = Some(Some(found));
+        a
+    });
+    h.run_steps(3);
+    // What was found is kept while drawing, not looked up again (a lookup would find nothing).
+    assert_eq!(h.state_mut().ghidra_found(), Some(remembered.as_path()));
+    assert!(h.state_mut().ghidra_ready());
+    // After a settings change or an install it is looked up again.
+    h.state_mut().ghidra.found = None;
+    assert_eq!(h.state_mut().ghidra_found(), None);
+    assert!(!h.state_mut().ghidra_ready());
+}
+
+#[test]
 fn deep_mode_without_ghidra_asks_to_get_it_before_using_it() {
     use craft_anything_engine::workspace::TargetRef;
     use craft_anything_engines::game::{Builder, Installed, Inventory};
@@ -1410,6 +1434,44 @@ fn an_api_backends_request_rate_is_set_in_settings() {
     h.run_steps(2);
     h.get_by_label("Apply").click();
     assert!(wait(&mut h, |app| app.backend_options.get("Local model").and_then(|options| options.requests_per_minute) == Some(120)));
+}
+
+/// R5.4: an API backend's tool list is chosen in Settings → AI, beside what Auto works out to.
+#[test]
+fn an_api_backends_tool_list_is_chosen_in_settings() {
+    let mut h = harness(|| {
+        let mut app = demo::app(demo::engine(Mode::Experienced, true));
+        app.hub
+            .add_backend(
+                BackendConfig {
+                    name: "Local model".into(),
+                    kind: BackendKind::OpenaiCompatible,
+                    model: "test".into(),
+                    base_url: None,
+                    ssh_host: None,
+                    enabled: true,
+                },
+                None,
+            )
+            .unwrap();
+        app.state.settings_open = true;
+        app.state.settings_tab = craft_anything_ui_egui::state::SettingsTab::Ai;
+        app
+    });
+    h.state_mut().refresh_backends();
+    assert!(wait(&mut h, |app| app.backends.iter().any(|backend| backend.name == "Local model")));
+    h.get_by_label_contains("below a 64k window");
+    h.get_by_label("Builder's tools").click();
+    h.run_steps(2);
+    h.get_by_label("full").click();
+    assert!(wait(&mut h, |app| app.backend_options.get("Local model").and_then(|options| options.tools) == Some(craft_anything_ai::ToolList::Full)));
+    // The row waits for each save (#1946 review), and takes the next choice once it's done.
+    assert!(wait(&mut h, |app| app.jobs.running().next().is_none()));
+    h.run_steps(2);
+    h.get_by_label("Builder's tools").click();
+    h.run_steps(2);
+    h.get_by_label("lean").click();
+    assert!(wait(&mut h, |app| app.backend_options.get("Local model").and_then(|options| options.tools) == Some(craft_anything_ai::ToolList::Lean)));
 }
 
 /// #54, #98: an AI server on another computer is added by its address in Settings → AI, with a

@@ -623,6 +623,11 @@ auto_mode = true
         std::fs::create_dir_all(&managed).unwrap();
         std::fs::write(managed.join(launcher_name), "").unwrap();
         assert_eq!(s.ghidra_launcher(), Some(managed.join(launcher_name)));
+        // The Java Ghidra's setup brings is the Java runtime the listing and `Requires` see.
+        let java = dir.path().join("engines").join("jdk").join("jdk-21").join("bin").join(if cfg!(windows) { "java.exe" } else { "java" });
+        std::fs::create_dir_all(java.parent().unwrap()).unwrap();
+        std::fs::write(&java, "").unwrap();
+        assert_eq!(s.engine_path("java"), Some(java));
         // It is never written to config.toml, and a loaded config looks around the computer.
         let text = toml::to_string_pretty(&s).unwrap();
         assert!(!text.contains("only_configured"), "{text}");
