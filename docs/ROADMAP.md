@@ -1162,7 +1162,7 @@ Owner: open · Status: in progress
       the dotted-table form failed with "cannot extend value of type inline table with a dotted
       key" (#1867). A config-shape regression keeps the hint and the generated table valid.
       — claimed: AlexJoaquimPereira, branch bugfix/r2.2-codex-approval-hint
-- [ ] Codex (#1464): `assets_image_generate` and `assets_model_generate` were refused by `codex
+- [x] Codex (#1464): `assets_image_generate` and `assets_model_generate` were refused by `codex
       exec`'s approval policy, so a Codex builder couldn't make paid assets. Approve them on Codex's
       side too: the project's generated-assets switch and budget (with its question) still limit them
       — claimed: justinjohn0306, branch bugfix/r2.2-codex-approve-asset-tools
