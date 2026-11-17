@@ -796,6 +796,7 @@ yet, and the quick start is how every new person begins.
       — claimed: justinjohn0306, branch bugfix/r5.5-engine-not-found-words
 - [ ] A Java set for Ghidra (Settings → Engines, `engines.ghidra.java_home`) isn't used as the Java
       runtime either, so Vineflower still says Java isn't installed with only that set
+      — claimed: justinjohn0306, branch bugfix/r5.7-ghidra-java-for-java-tools
 - [x] JADX doesn't use the Java runtime engine (the Java Ghidra's setup brings, or a Java path set in
       Settings → Engines): its launcher script finds Java only through `JAVA_HOME` or PATH, and
       neither is passed, so with no system Java, Java source of an Android class fails although
