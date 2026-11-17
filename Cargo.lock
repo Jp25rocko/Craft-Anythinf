@@ -1279,6 +1279,7 @@ dependencies = [
  "craft-anything-js",
  "craft-anything-platform",
  "craft-anything-testkit",
+ "craft-sniff",
  "dirs",
  "hex",
  "image",
@@ -1318,6 +1319,7 @@ dependencies = [
  "toml 0.9.12+spec-1.1.0",
  "ureq",
  "wasmtime",
+ "winreg 0.55.0",
 ]
 
 [[package]]
@@ -1337,6 +1339,15 @@ version = "0.6.1"
 dependencies = [
  "bzip2-rs",
  "craft-anything-testkit",
+ "craft-elf",
+ "craft-har",
+ "craft-jsonc",
+ "craft-macho",
+ "craft-mime",
+ "craft-pe",
+ "craft-plist",
+ "craft-sourcemap",
+ "craft-tar",
  "lzma-rs",
  "miniz_oxide 0.8.9",
  "object 0.36.7",
@@ -1482,6 +1493,96 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "craft-codepage"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=de97c35f2b2af01c62371647e57a6affeab456fd#de97c35f2b2af01c62371647e57a6affeab456fd"
+
+[[package]]
+name = "craft-elf"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=fd91be74f078d7062945ff6512cf65afea0c73ac#fd91be74f078d7062945ff6512cf65afea0c73ac"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-har"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=6792748feaf14985e2cc97a0e258468621d5c02d#6792748feaf14985e2cc97a0e258468621d5c02d"
+dependencies = [
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-jsonc"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=64fcd9531ae2f6a8f9498478805cfc7228189a9b#64fcd9531ae2f6a8f9498478805cfc7228189a9b"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "craft-macho"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=83cb1133dd2bdd0d655ba2300f88863f0f53db0b#83cb1133dd2bdd0d655ba2300f88863f0f53db0b"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-mime"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=de97c35f2b2af01c62371647e57a6affeab456fd#de97c35f2b2af01c62371647e57a6affeab456fd"
+dependencies = [
+ "chrono",
+ "craft-codepage",
+ "encoding_rs",
+]
+
+[[package]]
+name = "craft-pe"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=83cb1133dd2bdd0d655ba2300f88863f0f53db0b#83cb1133dd2bdd0d655ba2300f88863f0f53db0b"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-plist"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=28561846057d88b8c2454b677856081707109631#28561846057d88b8c2454b677856081707109631"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-sniff"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=070005125f0af1a5ae4a59002270e5849505bfc0#070005125f0af1a5ae4a59002270e5849505bfc0"
+
+[[package]]
+name = "craft-sourcemap"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=c9a367b45b8d4ab688165139fde4795fa19589cf#c9a367b45b8d4ab688165139fde4795fa19589cf"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-tar"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=42bb9d35bba5c1074cce44fbc157785f3d29ad90#42bb9d35bba5c1074cce44fbc157785f3d29ad90"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -8392,6 +8493,7 @@ dependencies = [
  "craft-anything-engine",
  "proc-macro2",
  "syn 2.0.119",
+ "tempfile",
  "toml 0.9.12+spec-1.1.0",
 ]
 

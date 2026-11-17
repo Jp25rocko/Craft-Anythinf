@@ -4,7 +4,7 @@
 //! Every rewrite is a text edit on exact syntax-tree spans, and the edited text must parse again
 //! or the edit set is dropped. Rewrites at the `standard` level:
 //! - `!0` → `true`, `!1` → `false`;
-//! - `void 0` → `undefined` (only when nothing in the file declares a binding named `undefined`);
+//! - `void 0` → `undefined` (only without a binding named `undefined` or a dynamic `with` scope);
 //! - `a(), b(), c();` statement sequences → separate statements (only in statement lists, and only
 //!   when no later part would change meaning at the start of a statement);
 //! - webpack module parameters `(e, t, n)` → `(module, exports, __webpack_require__)`, using scope
@@ -64,6 +64,7 @@ struct RewriteVisitor<'s> {
     edits: Vec<Edit>,
     voids: Vec<Edit>,
     binds_undefined: bool,
+    has_with: bool,
 }
 
 fn starts_statement_safely(text: &str) -> bool {
@@ -83,6 +84,12 @@ impl<'a> Visit<'a> for RewriteVisitor<'_> {
             }
             _ => walk::walk_unary_expression(self, it),
         }
+    }
+
+    /// A with object can supply undefined even inside a closure created in its body.
+    fn visit_with_statement(&mut self, it: &WithStatement<'a>) {
+        self.has_with = true;
+        walk::walk_with_statement(self, it);
     }
 
     fn visit_binding_identifier(&mut self, it: &BindingIdentifier<'a>) {
@@ -125,10 +132,10 @@ fn rewrite_and_print(src: &str, st: SourceType, level: RewriteLevel) -> Result<(
     }
     let mut edits_applied = 0usize;
     if level == RewriteLevel::Standard {
-        let mut v = RewriteVisitor { src, edits: Vec::new(), voids: Vec::new(), binds_undefined: false };
+        let mut v = RewriteVisitor { src, edits: Vec::new(), voids: Vec::new(), binds_undefined: false, has_with: false };
         v.visit_program(&ret.program);
         let mut edits = v.edits;
-        if !v.binds_undefined {
+        if !v.binds_undefined && !v.has_with {
             edits.extend(v.voids);
         }
         let n = edits.len();

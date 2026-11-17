@@ -10,6 +10,7 @@ rust-version = "1.97"
 repository = "https://github.com/storytold/craft-anything"
 
 [workspace.dependencies]
+craft-har = { git = "https://github.com/storytold/craft-libs", rev = "6792748feaf14985e2cc97a0e258468621d5c02d" }
 # internal
 craft-anything-evidence = { path = "crates/evidence" }
 craft-anything-formats = { path = "crates/formats" }
@@ -26,6 +27,18 @@ craft-anything-ui-egui = { path = "crates/ui-egui" }
 craft-anything-testkit = { path = "crates/testkit" }
 
 # external
+# Shared unwrapped standard Base64 encoding; decoding keeps format-specific validation.
+craft-mime = { git = "https://github.com/storytold/craft-libs", rev = "de97c35f2b2af01c62371647e57a6affeab456fd" }
+# Shared bounded TAR/CPIO listing, including current compatibility fixes.
+craft-tar = { git = "https://github.com/storytold/craft-libs", rev = "42bb9d35bba5c1074cce44fbc157785f3d29ad90", features = ["serde"] }
+# XML plist reader; prerequisite craft-libs #1633 (repin after merge).
+craft-elf = { git = "https://github.com/storytold/craft-libs", rev = "fd91be74f078d7062945ff6512cf65afea0c73ac", features = ["serde"] }
+craft-pe = { git = "https://github.com/storytold/craft-libs", rev = "83cb1133dd2bdd0d655ba2300f88863f0f53db0b", features = ["serde"] }
+craft-macho = { git = "https://github.com/storytold/craft-libs", rev = "83cb1133dd2bdd0d655ba2300f88863f0f53db0b", features = ["serde"] }
+craft-jsonc = { git = "https://github.com/storytold/craft-libs", rev = "64fcd9531ae2f6a8f9498478805cfc7228189a9b" }
+craft-sourcemap = { git = "https://github.com/storytold/craft-libs", rev = "c9a367b45b8d4ab688165139fde4795fa19589cf" }
+craft-plist = { git = "https://github.com/storytold/craft-libs", rev = "28561846057d88b8c2454b677856081707109631" }
+craft-sniff = { git = "https://github.com/storytold/craft-libs", rev = "070005125f0af1a5ae4a59002270e5849505bfc0" }
 thiserror = "2"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"

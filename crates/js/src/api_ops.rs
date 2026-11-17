@@ -107,6 +107,19 @@ pub fn read_document(text: &str, allow_shorthand: bool) -> Option<Document> {
         let mut saw_anything = false;
         let mut parens = 0usize;
         while let Some(&(i, c)) = chars.peek() {
+            // Ignored tokens may separate any header tokens, including the name.
+            if c == '#' {
+                for (_, d) in chars.by_ref() {
+                    if d == '\n' || d == '\r' {
+                        break;
+                    }
+                }
+                continue;
+            }
+            if c.is_whitespace() || c == ',' || c == '\u{feff}' {
+                chars.next();
+                continue;
+            }
             if c == '{' && parens == 0 {
                 break;
             }
@@ -195,7 +208,12 @@ fn skip_string(chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>, text:
         chars.next();
         chars.next();
         let mut quotes = 0;
-        for (_, c) in chars.by_ref() {
+        while let Some((i, c)) = chars.next() {
+            if c == '\\' && text.get(i..).is_some_and(|rest| rest.starts_with("\\\"\"\"")) {
+                chars.nth(2);
+                quotes = 0;
+                continue;
+            }
             quotes = if c == '"' { quotes + 1 } else { 0 };
             if quotes == 3 {
                 return Some(());
@@ -206,10 +224,10 @@ fn skip_string(chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>, text:
     let mut escaped = false;
     for (_, c) in chars.by_ref() {
         match c {
+            '\r' | '\n' => return None,
             _ if escaped => escaped = false,
             '\\' => escaped = true,
             '"' => return Some(()),
-            '\n' => return None,
             _ => {}
         }
     }

@@ -597,6 +597,7 @@ fn qualify(package: &Option<String>, name: &str) -> String {
 /// Facts from a decoded `AndroidManifest.xml`.
 pub fn manifest(doc: &Document) -> Manifest {
     let mut m = Manifest::default();
+    let mut target_level = None;
     let mut stack: Vec<String> = Vec::new();
     let mut current: Option<Component> = None;
     let mut filter: Option<IntentFilter> = None;
@@ -611,11 +612,18 @@ pub fn manifest(doc: &Document) -> Manifest {
                         m.version_name = sval(a, "versionName");
                     }
                     ("manifest", "uses-sdk") => {
-                        m.min_sdk = sval(a, "minSdkVersion");
-                        m.target_sdk = sval(a, "targetSdkVersion");
+                        let min = attr(a, "minSdkVersion");
+                        let target = attr(a, "targetSdkVersion");
+                        m.min_sdk = min.map(|sdk| sdk.value.clone());
+                        m.target_sdk = target.map(|sdk| sdk.value.clone());
                         m.max_sdk = sval(a, "maxSdkVersion");
+                        // Use the minimum when the target is omitted. Read typed integers before formatting.
+                        target_level = target.or(min).and_then(|sdk| match sdk.raw.data_type {
+                            0x10 | 0x11 => u32::try_from(sdk.raw.data as i32).ok(),
+                            _ => sdk.value.parse().ok(),
+                        });
                     }
-                    ("manifest", "uses-permission" | "uses-permission-sdk-23") => {
+                    ("manifest", "uses-permission" | "uses-permission-sdk-23" | "uses-permission-sdk-m") => {
                         if let Some(p) = sval(a, "name")
                             && m.uses_permissions.len() < 4096
                         {
@@ -722,10 +730,10 @@ pub fn manifest(doc: &Document) -> Manifest {
             _ => {}
         }
     }
-    let target: Option<u32> = m.target_sdk.as_deref().and_then(|s| s.parse().ok());
     for c in &mut m.components {
         // Providers were exported by default up to API 16, intent filters or not.
-        let implied = if c.kind == "provider" { target.is_none_or(|t| t <= 16) } else { !c.intent_filters.is_empty() && target.is_none_or(|t| t < 31) };
+        let implied =
+            if c.kind == "provider" { target_level.is_none_or(|t| t <= 16) } else { !c.intent_filters.is_empty() && target_level.is_none_or(|t| t < 31) };
         c.exported = c.exported_attribute.unwrap_or(implied);
     }
     m

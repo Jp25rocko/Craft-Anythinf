@@ -20,10 +20,15 @@ pub(crate) fn facts_from_tokens(tokens: &[Token<'_>], lines: &LineIndex) -> Modu
         api_token(&mut f, &sig, i, off, line);
         match (t.kind, t.text) {
             (TokKind::Ident, "require" | "import") if at(i + 1) == Some((TokKind::Punct, "(")) => {
+                let dynamic = t.text == "import";
+                if dynamic && i.checked_sub(1).and_then(at).is_some_and(|p| matches!(p, (TokKind::Punct, "." | "?."))) {
+                    continue;
+                }
+                let after_specifier = at(i + 3);
                 if let Some((TokKind::Str, s)) = at(i + 2)
-                    && at(i + 3) == Some((TokKind::Punct, ")"))
+                    && (after_specifier == Some((TokKind::Punct, ")")) || (dynamic && after_specifier == Some((TokKind::Punct, ","))))
                 {
-                    let kind = if t.text == "require" { "require" } else { "dynamic-import" };
+                    let kind = if dynamic { "dynamic-import" } else { "require" };
                     add_import(&mut f, kind, string_value(s), line, off);
                 }
             }
@@ -142,6 +147,11 @@ fn api_token(f: &mut ModuleFacts, sig: &[&Token<'_>], i: usize, off: u32, line: 
         }
         TokKind::Ident => {
             let Some(kind) = api_ops::client_hook(t.text) else { return };
+            // A hook property can be saved or passed around without calling the procedure.
+            let called = at(i + 1) == Some((TokKind::Punct, "(")) || (at(i + 1) == Some((TokKind::Punct, "?.")) && at(i + 2) == Some((TokKind::Punct, "(")));
+            if !called {
+                return;
+            }
             // Back along `a.b.c.useQuery`, as far as plain names go.
             let mut path: Vec<&str> = Vec::new();
             let mut j = i;

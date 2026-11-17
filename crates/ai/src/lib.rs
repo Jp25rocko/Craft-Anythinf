@@ -206,6 +206,14 @@ fn until_cancelled<T: Send + 'static>(cancel: &CancelToken, ask: impl FnOnce() -
     }
 }
 
+/// A server on this computer or its network (Ollama, LM Studio, one reached over ssh): it costs
+/// nothing and gets the small context budget, and Auto trims its builder's tools by its window. A
+/// remote OpenAI-compatible service has a large context and a bill, as any other cloud API (#374).
+pub fn runs_here(c: &BackendConfig) -> bool {
+    let over_ssh = c.ssh_host.as_deref().is_some_and(|h| !h.trim().is_empty());
+    c.kind == BackendKind::OpenaiCompatible && (over_ssh || c.base_url.as_deref().filter(|b| !b.trim().is_empty()).is_none_or(detect::on_this_network))
+}
+
 fn opencode_go_models_base(base: &str) -> String {
     let base = base.trim_end_matches('/');
     match base.strip_suffix("/openai/v1") {
@@ -228,7 +236,8 @@ pub const GEMINI_EFFORTS: [Effort; 4] = [Effort::Minimal, Effort::Low, Effort::M
 pub fn effort_levels(config: &BackendConfig) -> &'static [Effort] {
     match config.kind {
         BackendKind::Anthropic => &Effort::ALL,
-        BackendKind::AgentCli if config.model == "claude-code" => &Effort::ALL,
+        // By adapter, not id: Claude Code is also saved as `claude`.
+        BackendKind::AgentCli if cli_agents::adapter_for(&config.model).ids().contains(&"claude-code") => &Effort::ALL,
         BackendKind::Gemini => &GEMINI_EFFORTS,
         BackendKind::Openai | BackendKind::Openrouter | BackendKind::OpenaiCompatible => &OPENAI_EFFORTS,
         BackendKind::AgentCli => &[],
@@ -397,6 +406,11 @@ pub trait Conversation: Send {
     /// Drain new events (non-blocking).
     fn poll(&mut self) -> Vec<AgentEvent>;
     fn answer_consent(&mut self, call_id: &str, allow: bool);
+    /// Refuse a tool without asking anyone: the model is told `why`, not that the person said no.
+    fn refuse_consent(&mut self, call_id: &str, why: &str) {
+        let _ = why;
+        self.answer_consent(call_id, false);
+    }
     fn stop(&mut self);
     fn is_busy(&self) -> bool;
 }
@@ -793,12 +807,16 @@ impl AiHub {
         let Some(b) = cfg.backends.iter_mut().find(|b| b.config.name == name) else { return Ok(false) };
         match b.config.kind {
             BackendKind::AgentCli => {
-                if model_options::supported(&b.config) && b.options.cli_model.as_deref() != Some(model) {
+                // Ask the adapter, not the id: Claude Code is also saved as `claude`, and both must
+                // mean "no --model" when the choice is the default.
+                let claude_code = cli_agents::adapter_for(&b.config.model).ids().contains(&"claude-code");
+                let clear = claude_code && model == crate::anthropic::CLAUDE_CODE_DEFAULT;
+                if model_options::supported(&b.config) && (clear || b.options.cli_model.as_deref() != Some(model)) {
                     b.options.cli_context = None;
                     b.options.cli_reasoning_effort = None;
                     b.options.effort = None;
                 }
-                b.options.cli_model = Some(model.to_string());
+                b.options.cli_model = if clear { None } else { Some(model.to_string()) };
             }
             _ => b.config.model = model.to_string(),
         }
@@ -842,6 +860,36 @@ impl AiHub {
             self.save_config(&config)?;
         }
         Ok(requested)
+    }
+
+    /// The tools a builder on this API backend is offered, and whether Auto here depends on the
+    /// model's window (a local model) rather than offering every tool (a paid service).
+    pub fn tool_list(&self, name: &str) -> Result<(ToolList, bool), ToolError> {
+        let entry = self.entry(name)?;
+        Self::api_only(&entry, "tool list")?;
+        Ok((entry.options.tools.unwrap_or_default(), runs_here(&entry.config)))
+    }
+
+    /// Change the tools future builders on this backend are offered. Auto is saved as no setting.
+    pub fn set_tool_list(&self, name: &str, list: ToolList) -> Result<ToolList, ToolError> {
+        let mut config = self.config_to_change()?;
+        let entry = config.backends.iter_mut().find(|entry| entry.config.name == name).ok_or_else(|| {
+            ToolError::invalid(format!("No AI backend named {name:?}")).with_remediation("See `craft-anything-cli ai list`, or add one in Settings → AI.")
+        })?;
+        Self::api_only(entry, "tool list")?;
+        let requested = Some(list).filter(|l| *l != ToolList::Auto);
+        if entry.options.tools != requested {
+            entry.options.tools = requested;
+            self.save_config(&config)?;
+        }
+        Ok(list)
+    }
+
+    fn api_only(entry: &BackendEntry, what: &str) -> Result<(), ToolError> {
+        if entry.config.kind == BackendKind::AgentCli {
+            return Err(ToolError::invalid(format!("Agent apps choose their own tools. Set a {what} on an API backend.")));
+        }
+        Ok(())
     }
 
     fn api_request_rate(entry: &BackendEntry) -> Result<Option<u32>, ToolError> {
@@ -1081,10 +1129,7 @@ impl AiHub {
             _ => None,
         };
         let base = tunneled_base.as_deref().or(base);
-        // A server on this computer or its network (Ollama, LM Studio, one reached over ssh) costs
-        // nothing and gets the small context budget; a remote OpenAI-compatible service has a
-        // large context and a bill, as any other cloud API (#374).
-        let local = c.kind == BackendKind::OpenaiCompatible && base.is_none_or(detect::on_this_network);
+        let local = runs_here(c);
         let limit = stream_limit(&e.options);
         let sends_effort = effort_in_use(c, Some(&e.options)).is_some();
         let with_limit = |mut o: openai::OpenAi| {

@@ -388,16 +388,10 @@ const READING_TOOLS: &[&str] = &["Read", "Glob", "Grep", "LS", "NotebookRead"];
 /// (`--fork-session`) and the copy not kept, no tool server, and only Read, Glob and Grep (none in
 /// Clean room).
 fn question_args(mut a: Vec<String>, cx: &ArgsCx) -> Vec<String> {
-    a.extend([
-        "-p".into(),
-        "--output-format".into(),
-        "stream-json".into(),
-        "--verbose".into(),
-        "--append-system-prompt".into(),
-        cx.preamble.to_string(),
-        "--model".into(),
-        cx.options.cli_model.clone().unwrap_or_else(|| crate::anthropic::DEFAULT_MODEL.into()),
-    ]);
+    a.extend(["-p".into(), "--output-format".into(), "stream-json".into(), "--verbose".into(), "--append-system-prompt".into(), cx.preamble.to_string()]);
+    if let Some(model) = cx.options.cli_model.as_deref().filter(|m| !m.trim().is_empty()) {
+        a.extend(["--model".into(), model.to_string()]);
+    }
     if let Some(r) = cx.resume {
         a.extend(["--resume".into(), r.to_string(), "--fork-session".into()]);
     }
@@ -459,11 +453,13 @@ impl AgentAdapter for ClaudeCode {
     }
 
     fn model_in_use(&self, options: Option<&BackendOptions>) -> Option<String> {
-        Some(options.and_then(|options| options.cli_model.clone()).unwrap_or_else(|| crate::anthropic::DEFAULT_MODEL.into()))
+        Some(options.and_then(|options| options.cli_model.clone()).unwrap_or_else(|| "Claude Code default".into()))
     }
 
     fn model_choices(&self, _config: &BackendConfig, _options: &BackendOptions) -> Result<Vec<String>, ToolError> {
-        Ok(crate::anthropic::MODELS.iter().map(|model| model.to_string()).collect())
+        let mut models = vec![crate::anthropic::CLAUDE_CODE_DEFAULT.to_string()];
+        models.extend(crate::anthropic::MODELS.iter().map(|model| model.to_string()));
+        Ok(models)
     }
 
     fn args(&self, cx: &ArgsCx) -> Vec<String> {
@@ -473,9 +469,11 @@ impl AgentAdapter for ClaudeCode {
         }
         let mcp_json = json!({"mcpServers": {MCP_NAME: {"command": cx.mcp.command, "args": cx.mcp.args}}}).to_string();
         a.extend(["-p".into(), "--output-format".into(), "stream-json".into(), "--verbose".into(), "--append-system-prompt".into(), cx.preamble.to_string()]);
-        // Opus 5.5 everywhere unless config.toml names another model on purpose; the effort
-        // goes in through the environment (see `run_cli`).
-        a.extend(["--model".into(), cx.options.cli_model.clone().unwrap_or_else(|| crate::anthropic::DEFAULT_MODEL.into())]);
+        // Omit --model unless config.toml names one: users may have custom models configured in
+        // Claude Code, and forcing a hardcoded default blocks them.
+        if let Some(model) = cx.options.cli_model.as_deref().filter(|m| !m.trim().is_empty()) {
+            a.extend(["--model".into(), model.to_string()]);
+        }
         if let Some(r) = cx.resume {
             a.extend(["--resume".into(), r.to_string()]);
         }
@@ -538,12 +536,22 @@ impl AgentAdapter for ClaudeCode {
                     });
                 }
             }
+            // Each turn reports its plan's limits; `rejected` means this one was refused by them.
+            "rate_limit_event" => {
+                let info = v.get("rate_limit_info");
+                if info.and_then(|i| i.get("status")).and_then(Value::as_str) == Some("rejected") {
+                    let kind = info.and_then(|i| i.get("rateLimitType")).and_then(Value::as_str).unwrap_or_default().to_string();
+                    p.plan_limit = Some((kind, info.and_then(|i| i.get("resetsAt")).and_then(Value::as_u64)));
+                }
+            }
             "assistant" => {
                 if let Some(code) = v.get("error").and_then(Value::as_str) {
-                    let failure = TurnFailure::claude(code);
+                    let plan_limit = if code == "rate_limit" { p.plan_limit.clone() } else { None };
+                    let failure = if plan_limit.is_some() { TurnFailure::new(FailureKind::UsageLimit) } else { TurnFailure::claude(code) };
                     p.failure = Some(failure);
                     let why = v.pointer("/message/content").map(content_text).unwrap_or_else(|| code.to_string());
                     let (message, hint) = claude_code_failure_in(&why, self.folder.as_deref());
+                    let hint = plan_limit.map(|(kind, at)| plan_limit_fix(&kind, at, unix_now())).or(hint);
                     let remediation = hint.or_else(|| match failure.kind {
                         FailureKind::Authentication => self.sign_in_fix(),
                         FailureKind::Billing => Some("Check the account's credits, plan and spending limit before trying again.".into()),
@@ -599,6 +607,9 @@ impl AgentAdapter for ClaudeCode {
                     p.failure.get_or_insert(TurnFailure::new(FailureKind::Unknown));
                     let why = if s("result").is_empty() { s("subtype") } else { s("result") };
                     let (message, remediation) = claude_code_failure_in(&why, self.folder.as_deref());
+                    // The run keeps the turn's last error: a used-up plan limit keeps saying when it resets.
+                    let plan_limit = p.failure.filter(|f| f.kind == FailureKind::UsageLimit).and(p.plan_limit.clone());
+                    let remediation = plan_limit.map(|(kind, at)| plan_limit_fix(&kind, at, unix_now())).or(remediation);
                     out.push(AgentEvent::Error { message, remediation, log: None });
                 }
             }

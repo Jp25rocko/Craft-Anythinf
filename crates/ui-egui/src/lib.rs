@@ -230,6 +230,7 @@ pub enum Done {
     /// A tool started by a button finished (see `CraftApp::act`).
     Acted {
         tool: &'static str,
+        params: Value,
         result: Result<Value, ToolError>,
     },
     /// Which asset providers have a key set up (provider id → stored).
@@ -865,7 +866,7 @@ impl CraftApp {
         {
             // The Ghidra folder changed: look for it again.
             if s.settings.engines.ghidra.install_dir != self.settings.engines.ghidra.install_dir {
-                self.ghidra.ready = None;
+                self.ghidra.found = None;
             }
             // The `ai` table belongs to the ai crate (it edits it in the session); keep its copy.
             self.settings.ai = s.settings.ai.clone();
@@ -1039,15 +1040,16 @@ impl CraftApp {
     /// as `Done::Acted` and is shown by `acted`. A click is the person's consent.
     pub fn act(&mut self, tool: &'static str, params: Value, title: String) {
         let engine = self.engine.clone();
+        let scope = params.clone();
         self.jobs.spawn(title, false, move |j| {
             let progress = j.reporter();
             let opts = CallOptions::new(Caller::Ui).with_consent(Consent::Granted).with_cancel(j.cancel.clone()).with_progress(&progress);
             let result = engine.call(tool, params, opts).map(|o| o.to_json().get("result").cloned().unwrap_or(Value::Null));
-            Ok(Done::Acted { tool, result })
+            Ok(Done::Acted { tool, params: scope, result })
         });
     }
 
-    fn acted(&mut self, tool: &str, result: Result<Value, ToolError>) {
+    fn acted(&mut self, tool: &str, params: &Value, result: Result<Value, ToolError>) {
         match (tool, result) {
             ("project_preview", Ok(v)) => {
                 let url = v.get("url").and_then(Value::as_str).map(str::to_string);
@@ -1115,9 +1117,9 @@ impl CraftApp {
                 | "game_unreal_texture_export"
                 | "game_unity_asset_export",
                 r,
-            ) => game_files::tool_done(self, tool, r),
+            ) => game_files::tool_done(self, tool, params, r),
             // The Game files screen's look at a picked game.
-            ("core_target_triage", r) => game_files::tool_done(self, tool, r),
+            ("core_target_triage", r) => game_files::tool_done(self, tool, params, r),
             (_, Ok(_)) => {}
             (_, Err(e)) if clean_room::is_refusal(&e) => self.state.modal = Some(state::Modal::DeepMode),
             (_, Err(e)) => self.toast(e.for_people(), true),
@@ -1587,7 +1589,7 @@ impl CraftApp {
             Done::Thumb { path, image } => self.thumb_ready(path, image),
             Done::Preview { path, image } => self.preview_ready(path, image),
             Done::Tool { tool, params, route, result } => self.tool_done(tool, params, route, result),
-            Done::Acted { tool, result } => self.acted(tool, result),
+            Done::Acted { tool, params, result } => self.acted(tool, &params, result),
             Done::Opened { path, result } => match result {
                 Ok(v) => {
                     // Another target: a new conversation, so answers about two things don't mix.

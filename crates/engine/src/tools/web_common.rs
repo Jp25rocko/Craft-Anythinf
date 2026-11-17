@@ -4,7 +4,7 @@
 //! summary, PNG pixel diffing and base64.
 
 use crate::tool::Ctx;
-use craft_anything_engines::cdp::{self, CdpClient, Deadline, Endpoint, WsConn};
+use craft_anything_engines::cdp::{self, CdpClient, CdpEvent, Deadline, Endpoint, WsConn};
 use craft_anything_evidence::{Environment, ErrorCode, ToolError, host_triple, sha256_hex};
 use craft_anything_platform::process::{Process, RunningProcess, StdinMode};
 use serde_json::{Value, json};
@@ -417,6 +417,58 @@ pub fn connect_target(browser: &Browser, target: &Value, max_message: usize, dl:
     let wt = cdp::ws_target(ws_url, &browser.endpoint)?;
     let conn = WsConn::connect(&wt, max_message, dl)?;
     Ok(CdpClient::new(conn))
+}
+
+/// Connect to a page, enable the Page domain that delivers `Page.javascriptDialogOpening`, and
+/// answer any dialog it opens by itself, so a call never waits on one. The dialog events stay in
+/// the client's queue for the caller to report.
+pub fn connect_target_answering_dialogs(browser: &Browser, target: &Value, max_message: usize, dl: &Deadline) -> Result<CdpClient, ToolError> {
+    let mut client = connect_target(browser, target, max_message, dl).map(CdpClient::answering_dialogs)?;
+    let _ = client.call("Page.enable", json!({}), None, dl);
+    Ok(client)
+}
+
+/// The dialogs a page opened during a run, from its events: kind, first line and how it was answered.
+pub fn dialogs_from(events: &[CdpEvent]) -> Vec<Value> {
+    let line = |s: &str| s.lines().next().unwrap_or_default().chars().take(300).collect::<String>();
+    let mut dialogs = Vec::new();
+    for e in events.iter().filter(|e| e.method == cdp::DIALOG_OPENING).take(30) {
+        let p = &e.params;
+        let answered = if cdp::dialog_answer(p)["accept"] == true { "accepted" } else { "dismissed" };
+        let message = p.get("message").and_then(Value::as_str).unwrap_or_default();
+        dialogs.push(json!({"type": p["type"], "message": line(message), "answered": answered}));
+    }
+    dialogs
+}
+
+/// The summary's sentence on dialogs a page opened by itself (empty when none).
+pub fn dialogs_said(dialogs: &[Value]) -> String {
+    let Some(first) = dialogs.first() else { return String::new() };
+    let kind = match first["type"].as_str() {
+        Some("alert") => "an alert",
+        Some("confirm") => "a confirm question",
+        Some("prompt") => "a prompt",
+        Some("beforeunload") => "a leave-page question",
+        _ => "a dialog",
+    };
+    let message = first["message"].as_str().unwrap_or_default();
+    let more = if dialogs.len() > 1 { format!(" and {} more", dialogs.len() - 1) } else { String::new() };
+    format!(" The page opened {kind} by itself (\"{message}\"){more}; it was {} so the page could go on.", first["answered"].as_str().unwrap_or("answered"))
+}
+
+/// [`dialogs_said`] for a result's `dialogs` value.
+pub fn dialogs_said_in(dialogs: &Value) -> String {
+    dialogs_said(dialogs.as_array().map(Vec::as_slice).unwrap_or_default())
+}
+
+/// Redact declared secrets in each dialog's message (a page may echo one).
+pub fn redact_dialogs(dialogs: &mut [Value], secrets: &mut Secrets) {
+    for dialog in dialogs {
+        if let Some(message) = dialog["message"].as_str() {
+            let redacted = secrets.text(message);
+            dialog["message"] = json!(redacted);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1179,6 +1231,36 @@ pub fn png_artifact(bytes: &[u8]) -> Result<Value, ToolError> {
 
 #[cfg(test)]
 mod tests {
+    /// The dialogs a page opened are reported with the first line of their message and the answer
+    /// `answering_dialogs` gives: alerts accepted, confirm/prompt dismissed.
+    #[test]
+    fn page_dialogs_are_reported_with_their_answer() {
+        use super::{dialogs_from, dialogs_said, dialogs_said_in};
+        use craft_anything_engines::cdp::{CdpEvent, DIALOG_OPENING};
+        use serde_json::json;
+        let event = |params| CdpEvent { method: DIALOG_OPENING.into(), params, session_id: None };
+        let dialogs = dialogs_from(&[
+            event(json!({"type": "alert", "message": "Saved\nsecond line"})),
+            event(json!({"type": "confirm", "message": "Delete everything?"})),
+        ]);
+        assert_eq!(
+            dialogs,
+            vec![
+                json!({"type": "alert", "message": "Saved", "answered": "accepted"}),
+                json!({"type": "confirm", "message": "Delete everything?", "answered": "dismissed"}),
+            ],
+            "one line each, and a confirm is never agreed to"
+        );
+        assert_eq!(dialogs_said(&dialogs), " The page opened an alert by itself (\"Saved\") and 1 more; it was accepted so the page could go on.");
+        assert_eq!(dialogs_said(&[]), "");
+        assert_eq!(dialogs_said_in(&json!([])), "");
+        assert_eq!(dialogs_said_in(&serde_json::Value::Null), "");
+        let mut secrets = super::Secrets::new(&["tok-SECRET".to_string()]);
+        let mut echoed = dialogs_from(&[event(json!({"type": "alert", "message": "token tok-SECRET"}))]);
+        super::redact_dialogs(&mut echoed, &mut secrets);
+        assert_eq!(echoed[0]["message"], "token «redacted»", "a declared secret in a dialog is redacted");
+    }
+
     /// Review of #1459: a copied `Local State` must not open a profile where saving passwords is on.
     #[test]
     fn sign_in_browsers_open_the_prepared_profile_and_fresh_ones_stay_plain() {
