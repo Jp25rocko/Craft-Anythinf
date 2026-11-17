@@ -1493,3 +1493,12 @@ You're up to date.	已是最新版本。
 Forget a website sign-in	忘记网站登录
 Sign in to a website	登录网站
 Some shared files could not be hard-linked and were copied instead ({size}).	部分共享文件无法建立硬链接，已改为复制（{size}）。
+Interface font	界面字体
+The font for the whole window.	整个窗口使用的字体。
+Add a font file…	添加字体文件…
+That file is not a .ttf or .otf font.	该文件不是 .ttf 或 .otf 字体。
+That font file is too large.	该字体文件太大。
+That file is not a font this app can read.	该文件不是此应用能读取的字体。
+
+Detection looks at this computer: whether the API keys in your environment are set, model servers running here or on your network (their model list is requested), the coding agents you already installed, and the SSH hosts in your SSH config (suggestions only). No project files or prompts are uploaded, and nothing is added unless you choose it.	Detection looks at this computer: whether the API keys in your environment are set, model servers running here or on your network (their model list is requested), the coding agents you already installed, and the SSH hosts in your SSH config (suggestions only). No project files or prompts are uploaded, and nothing is added unless you choose it.
+That font file is empty.	该字体文件是空的。

@@ -1493,3 +1493,12 @@ You're up to date.	Bạn đang dùng phiên bản mới nhất.
 Forget a website sign-in	Quên thông tin đăng nhập của một trang web
 Sign in to a website	Đăng nhập vào một trang web
 Some shared files could not be hard-linked and were copied instead ({size}).	Một số tệp chia sẻ không thể tạo liên kết cứng nên đã được sao chép ({size}).
+Interface font	Phông chữ giao diện
+The font for the whole window.	Phông chữ cho toàn bộ cửa sổ.
+Add a font file…	Thêm tệp phông chữ…
+That file is not a .ttf or .otf font.	Tệp đó không phải phông chữ .ttf hoặc .otf.
+That font file is too large.	Tệp phông chữ đó quá lớn.
+That file is not a font this app can read.	Tệp đó không phải phông chữ mà ứng dụng này đọc được.
+
+Detection looks at this computer: whether the API keys in your environment are set, model servers running here or on your network (their model list is requested), the coding agents you already installed, and the SSH hosts in your SSH config (suggestions only). No project files or prompts are uploaded, and nothing is added unless you choose it.	Detection looks at this computer: whether the API keys in your environment are set, model servers running here or on your network (their model list is requested), the coding agents you already installed, and the SSH hosts in your SSH config (suggestions only). No project files or prompts are uploaded, and nothing is added unless you choose it.
+That font file is empty.	Tệp phông chữ đó trống.

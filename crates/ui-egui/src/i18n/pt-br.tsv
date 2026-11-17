@@ -1493,3 +1493,12 @@ You're up to date.	Você está usando a versão mais recente.
 Forget a website sign-in	Esquecer o login de um site
 Sign in to a website	Entrar em um site
 Some shared files could not be hard-linked and were copied instead ({size}).	Alguns arquivos compartilhados não puderam ser vinculados por hard link e foram copiados ({size}).
+Interface font	Fonte da interface
+The font for the whole window.	A fonte da janela inteira.
+Add a font file…	Adicionar um arquivo de fonte…
+That file is not a .ttf or .otf font.	Esse arquivo não é uma fonte .ttf ou .otf.
+That font file is too large.	Esse arquivo de fonte é grande demais.
+That file is not a font this app can read.	Esse arquivo não é uma fonte que este aplicativo consegue ler.
+
+Detection looks at this computer: whether the API keys in your environment are set, model servers running here or on your network (their model list is requested), the coding agents you already installed, and the SSH hosts in your SSH config (suggestions only). No project files or prompts are uploaded, and nothing is added unless you choose it.	Detection looks at this computer: whether the API keys in your environment are set, model servers running here or on your network (their model list is requested), the coding agents you already installed, and the SSH hosts in your SSH config (suggestions only). No project files or prompts are uploaded, and nothing is added unless you choose it.
+That font file is empty.	Esse arquivo de fonte está vazio.
