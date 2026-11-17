@@ -793,6 +793,7 @@ yet, and the quick start is how every new person begins.
       `engines::locate` and their own not-found message, so a folder set as their path without the
       program says it isn't installed rather than that the folder has no such program; use
       `Settings::engine_not_found` as the Java and disassembler tools do
+      — claimed: justinjohn0306, branch bugfix/r5.5-engine-not-found-words
 - [ ] A Java set for Ghidra (Settings → Engines, `engines.ghidra.java_home`) isn't used as the Java
       runtime either, so Vineflower still says Java isn't installed with only that set
 - [x] JADX doesn't use the Java runtime engine (the Java Ghidra's setup brings, or a Java path set in
