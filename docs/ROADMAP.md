@@ -1080,7 +1080,7 @@ Owner: open · Status: in progress
       question or build stops before it begins (#1859). Ask once more after a short pause when
       that is what it said; a turn already retries OpenCode's 503s
       — claimed: FuryNocturn, branch bugfix/r2.2-opencode-models-503
-- [ ] OpenCode prints that typed answer on stdout and `HTTP 503 Service Unavailable` on stderr,
+- [x] OpenCode prints that typed answer on stdout and `HTTP 503 Service Unavailable` on stderr,
       and a failed run's error keeps only stderr, so the retry above never sees the answer and the
       person is shown "HTTP 503" instead of OpenCode's reason (#1859). Read the typed answer from
       stdout, retry on it, and name its message in the error
