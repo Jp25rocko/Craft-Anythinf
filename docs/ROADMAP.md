@@ -1080,6 +1080,11 @@ Owner: open · Status: in progress
       question or build stops before it begins (#1859). Ask once more after a short pause when
       that is what it said; a turn already retries OpenCode's 503s
       — claimed: FuryNocturn, branch bugfix/r2.2-opencode-models-503
+- [ ] OpenCode prints that typed answer on stdout and `HTTP 503 Service Unavailable` on stderr,
+      and a failed run's error keeps only stderr, so the retry above never sees the answer and the
+      person is shown "HTTP 503" instead of OpenCode's reason (#1859). Read the typed answer from
+      stdout, retry on it, and name its message in the error
+      — claimed: justinjohn0306, branch bugfix/r2.2-opencode-503-stdout
 - [x] `docs/opencode.md` says "OpenCode V2" but not where to get it: OpenCode's install script
       and npm's `opencode-ai` give the 1.x line, whose `run` has no `--standalone` (npm's
       `@opencode/cli` is 2.x), so the check before a build
