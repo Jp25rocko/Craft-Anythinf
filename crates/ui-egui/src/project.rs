@@ -1399,10 +1399,10 @@ fn draw_items(
     let mut next_asked = 0;
     let mut questions_up_to = |app: &mut CraftApp, ui: &mut Ui, end: usize| {
         while let Some(a) = app.asked.get_mut(&ws.root).and_then(|l| l.get_mut(next_asked)).filter(|a| a.after <= end) {
-            let make = ui.push_id(("asked", next_asked), |ui| crate::just_ask::card(ui, a, !advanced)).inner.then(|| a.question.clone());
+            let make = ui.push_id(("asked", next_asked), |ui| crate::just_ask::card(ui, a, !advanced)).inner.then(|| a.clone());
             next_asked += 1;
-            if let Some(question) = make {
-                app.make_this_change(&question);
+            if let Some(asked) = make {
+                app.make_this_change(&asked);
             }
         }
     };

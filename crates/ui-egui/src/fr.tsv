@@ -334,9 +334,6 @@ Hide the answer	Masquer la réponse
 from the builder's own memory of the build	d'après la mémoire de la construction du constructeur
 from the project's files	d'après les fichiers du projet
 Just a question: nothing was changed. Answered by	Simple question : rien n'a été modifié. Réponse de
-Make this change	Faire cette modification
-Make only the change you suggested for: "{question}"	Faire uniquement la modification proposée pour : « {question} »
-Switched to Change it	Passé sur « Modifier »
 Couldn't answer:	Impossible de répondre :
 Save settings	Enregistrer les réglages
 Deep mode on	Mode Approfondi activé

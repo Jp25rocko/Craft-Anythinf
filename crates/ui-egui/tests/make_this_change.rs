@@ -18,6 +18,8 @@ fn a_click_on_make_this_change_leaves_the_cursor_in_the_filled_box() {
             let mut asked: Asked =
                 AskedQuestion::new("why is it cramped?".into(), "The card is too wide.".into(), true, "Claude Code".into(), None, after).into();
             asked.collapsed = false;
+            // Asked in Clean room, like the build: its answer goes in the request.
+            asked.deep = false;
             app.asked.insert(root, vec![asked]);
         }
         app
@@ -39,7 +41,7 @@ fn a_click_on_make_this_change_leaves_the_cursor_in_the_filled_box() {
     let at = h.get_by_label("Make this change").rect().center();
     click(&mut h, at);
     h.run_steps(3);
-    assert_eq!(h.state().state.project_input, "Make only the change you suggested for: \"why is it cramped?\"");
+    assert_eq!(h.state().state.project_input, "Make only this change you suggested when I asked \"why is it cramped?\":\n\nThe card is too wide.");
     assert!(!h.state().state.just_ask, "switched to Change it");
     assert!(h.get_by_label("Ask for a change").is_focused(), "the cursor is in the prompt box");
     // At the end of the request, ready to add to it, not before its first word.

@@ -1532,7 +1532,8 @@ Gaps found while using the app for real projects.
       its cost is added to the project's usage, and concurrent usage writes in the app are serialized
       — claimed: AlexJoaquimPereira, branch bugfix/r2.9-question-cost
 - [x] "Make this change" on an answer that suggests one (sends it as a normal message): on every
-      answered question; it fills the prompt box, switched to "Change it", and the person sends it
+      answered question; it fills the prompt box with a request carrying the answer's text (not a
+      Deep answer in Clean room), switched to "Change it", and the person sends it
       — PR #1969; claimed: yasshhc, branch feature/r2.9-make-this-change
 - [x] "Just ask" is told it has fewer tools than the builder and that the build may be running
       beside it, so it no longer reports the build's tools as disconnected or its work as cut off
