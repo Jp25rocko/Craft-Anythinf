@@ -540,11 +540,25 @@ impl Settings {
         if id == craft_anything_engines::ghidra::get::ID {
             return self.ghidra_launcher();
         }
+        if let Some(java) = (id == "java").then(|| self.java_set_for_ghidra()).flatten() {
+            return Some(java);
+        }
         if self.engines.only_configured {
             craft_anything_engines::locate_configured(id, &self.engines.tools, &self.engine_store_dir())
         } else {
             craft_anything_engines::locate(id, &self.engines.tools, &self.engine_store_dir())
         }
+    }
+
+    /// The `java` in the Java folder set for Ghidra, unless a path is set for the Java runtime
+    /// itself: the other Java tools (Vineflower, JADX…) run on it too.
+    pub fn java_set_for_ghidra(&self) -> Option<PathBuf> {
+        use craft_anything_engines::ToolPathLookup;
+        if self.engines.tools.override_for("java").is_some() {
+            return None;
+        }
+        let home = self.engines.ghidra.java_home.as_deref()?;
+        Some(home.join("bin").join(if cfg!(windows) { "java.exe" } else { "java" })).filter(|p| p.is_file())
     }
 
     /// Why an engine wasn't found and what to do about it, as (reason, remediation).
@@ -633,6 +647,30 @@ auto_mode = true
         assert!(!text.contains("only_configured"), "{text}");
         let loaded: Settings = toml::from_str(&text).unwrap();
         assert!(!loaded.engines.only_configured);
+    }
+
+    #[test]
+    fn a_java_set_for_ghidra_runs_the_other_java_tools_unless_one_is_set_for_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Settings::default();
+        s.engines.store_dir = Some(dir.path().join("engines"));
+        s.engines.only_configured = true;
+        let exe = if cfg!(windows) { "java.exe" } else { "java" };
+        let empty = dir.path().join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        s.engines.ghidra.java_home = Some(empty);
+        assert_eq!(s.engine_path("java"), None, "a folder with no bin/java isn't a Java");
+        let home = dir.path().join("jdk");
+        std::fs::create_dir_all(home.join("bin")).unwrap();
+        std::fs::write(home.join("bin").join(exe), "").unwrap();
+        s.engines.ghidra.java_home = Some(home.clone());
+        assert_eq!(s.engine_path("java"), Some(home.join("bin").join(exe)));
+        let own = dir.path().join("own");
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::write(own.join(exe), "").unwrap();
+        s.engines.tools.java = Some(own.clone());
+        assert_eq!(s.java_set_for_ghidra(), None, "a path set for Java itself wins");
+        assert_eq!(s.engine_path("java"), Some(own.join(exe)));
     }
 
     #[test]

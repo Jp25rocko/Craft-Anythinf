@@ -794,8 +794,9 @@ yet, and the quick start is how every new person begins.
       program says it isn't installed rather than that the folder has no such program; use
       `Settings::engine_not_found` as the Java and disassembler tools do
       — claimed: justinjohn0306, branch bugfix/r5.5-engine-not-found-words
-- [ ] A Java set for Ghidra (Settings → Engines, `engines.ghidra.java_home`) isn't used as the Java
-      runtime either, so Vineflower still says Java isn't installed with only that set
+- [x] A Java set for Ghidra (Settings → Engines, `engines.ghidra.java_home`) isn't used as the Java
+      runtime either, so Vineflower still says Java isn't installed with only that set. It now is
+      (`Settings::java_set_for_ghidra`), for JADX too, unless a path is set for Java itself
       — claimed: justinjohn0306, branch bugfix/r5.7-ghidra-java-for-java-tools
 - [x] JADX doesn't use the Java runtime engine (the Java Ghidra's setup brings, or a Java path set in
       Settings → Engines): its launcher script finds Java only through `JAVA_HOME` or PATH, and

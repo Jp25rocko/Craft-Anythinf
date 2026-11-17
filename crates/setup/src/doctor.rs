@@ -373,8 +373,8 @@ mod engine_check_tests {
         let check = ghidra_java(&c).unwrap();
         assert_eq!(check.status, CheckStatus::Ok);
         assert!(check.message.contains(&set.display().to_string()), "{}", check.message);
-        // engine:java still reports the Java on PATH (here: none, as only configured paths count).
-        assert!(c.iter().any(|x| x.name == "engine:java" && x.status == CheckStatus::Info));
+        // The other Java tools run on it too, so engine:java finds it.
+        assert!(c.iter().any(|x| x.name == "engine:java" && x.status == CheckStatus::Ok), "{c:?}");
 
         // None set: the JAVA_HOME this program has.
         s.engines.ghidra.java_home = None;
