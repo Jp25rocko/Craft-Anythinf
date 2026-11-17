@@ -789,7 +789,7 @@ yet, and the quick start is how every new person begins.
       the folder. Live in Debian 13 with Java set to a JDK's folder: Vineflower decompiled (before:
       "permission denied")
       — claimed: Fadlalla-ai, branch bugfix/r5.7-engine-path-folder
-- [ ] gdb, rizin sessions, adb, JADX, Apktool, Frida, tshark, lldb and the browser look up their program with
+- [x] gdb, rizin sessions, adb, JADX, Apktool, Frida, tshark, lldb and the browser look up their program with
       `engines::locate` and their own not-found message, so a folder set as their path without the
       program says it isn't installed rather than that the folder has no such program; use
       `Settings::engine_not_found` as the Java and disassembler tools do
