@@ -1846,6 +1846,10 @@ Gaps found while using the app for real projects.
       holding it) isn't tried again, so the whole session runs on defaults and refuses every save:
       try the read again for a short while before giving up
       — claimed: NicolasBohn, branch bugfix/r2.9-config-read-retry
+- [ ] A config.toml that is a link to a file that isn't there reads as "not found", so it loads as
+      plain defaults and the next save replaces the link; and the note on kept copies reads as if
+      their names went up to `.broken.16` (they stop at `.broken.15`)
+      — claimed: hichang4u, branch bugfix/r2.9-config-link-no-target
 - [x] A website build has no `dev` or `start` script, since Craft Anything serves its built
       folder itself, so outside the app there was nothing to run (#1590): the builder writes
       app/README.md saying how to build it and which folder to serve
