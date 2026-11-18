@@ -1338,10 +1338,11 @@ Owner: open · Status: in progress
 - [ ] CI runs the tests on Ubuntu only, so `cfg(windows)` tests (search paths, consoles, Job
       Objects) are checked only on contributors' machines: run them on a Windows runner too
 - [x] "Claude Code on <ssh host>" is offered for any SSH host, whether or not it has Claude Code
-      (#62). Done: the suggestions stay, but adding one (UI, CLI or first run) runs
-      `ssh <host> -- <program> --version` with a 15-second deadline and saves nothing when the
-      host doesn't have it, naming the exact check command; an agent on this computer is not
-      checked
+      (#62). Done: the suggestions stay, but adding one in Settings → AI or the CLI runs
+      `ssh <host> -- <program> --version` with the program named by the suggestion or the one the
+      person gives for that host, within a 15-second deadline, and saves nothing when the host
+      doesn't have it, naming the exact check command; the Connect job's cancel stops the check,
+      an agent on this computer is not checked, and first run leaves SSH hosts to Settings
       — claimed: AlexJoaquimPereira, branch bugfix/r2.2-ssh-agent-check
 - [ ] Gemini CLI's sign-in reportedly refuses individuals now (#400): check, and stop recommending
       it in the builder setup dialog if so

@@ -68,13 +68,15 @@ pub fn models_to_choose(e: &ToolError) -> Vec<String> {
 
 /// Check that `program` is installed on `host` before an agent for it is saved. A host from
 /// `~/.ssh/config` is only a suggestion (#62).
-fn verify_remote_agent(host: &str, program: &str) -> Result<(), ToolError> {
+fn verify_remote_agent(host: &str, program: &str, cancel: &CancelToken) -> Result<(), ToolError> {
     let ask = [program.to_string(), "--version".to_string()];
+    let stop = cancel.clone();
     let process = craft_anything_platform::process::Process::new("ssh")
         .args(crate::ssh::ssh_args(host, &ask))
         .timeout(SSH_AGENT_CHECK_WAIT)
         .stdout_cap(64 * 1024)
-        .stderr_cap(64 * 1024);
+        .stderr_cap(64 * 1024)
+        .cancel_when(move || stop.is_cancelled());
     remote_check_outcome(host, program, process.run())
 }
 
@@ -88,6 +90,7 @@ fn remote_check_outcome(host: &str, program: &str, out: Result<craft_anything_pl
             .with_remediation(format!("Check that this computer can ssh to {host}, then run `{check}`. Pick another host, or add an AI from this computer."))),
         Ok(_) => Err(ToolError::new(ErrorCode::EngineMissing, format!("{program} isn't installed on {host}."))
             .with_remediation(format!("Install it there, or run `{check}` to check. Pick another host, or add an AI from this computer."))),
+        Err(e) if e.code == ErrorCode::Cancelled => Err(e),
         Err(e) if e.code == ErrorCode::TimedOut => Err(e.with_remediation(format!(
             "The check `{check}` didn't answer within {} seconds. Check that this computer can reach {host}, then try again.",
             SSH_AGENT_CHECK_WAIT.as_secs()
@@ -619,7 +622,13 @@ impl AiHub {
 
     /// Add (or replace) a backend, storing its key in the keychain when given.
     pub fn add_backend(&self, cfg: BackendConfig, key: Option<String>) -> Result<(), ToolError> {
-        self.add_backend_with(BackendEntry { config: cfg, options: BackendOptions::default() }, key)
+        self.add_backend_until(cfg, key, &CancelToken::default())
+    }
+
+    /// [`AiHub::add_backend`], given up as soon as `cancel` is set, including while an SSH host
+    /// is being checked for the agent.
+    pub fn add_backend_until(&self, cfg: BackendConfig, key: Option<String>, cancel: &CancelToken) -> Result<(), ToolError> {
+        self.add_backend_with_until(BackendEntry { config: cfg, options: BackendOptions::default() }, key, cancel)
     }
 
     /// Add an OpenAI-compatible server by its address: Ollama or LM Studio on another computer, or
@@ -727,34 +736,46 @@ impl AiHub {
 
     /// Like [`AiHub::add_backend`], with options.
     pub fn add_backend_with(&self, entry: BackendEntry, key: Option<String>) -> Result<(), ToolError> {
-        self.add_backend_with_check(entry, key, verify_remote_agent)
+        self.add_backend_with_until(entry, key, &CancelToken::default())
     }
 
-    /// [`AiHub::add_backend_with`], with the remote-agent check passed in so tests can stand in
-    /// for ssh.
+    /// [`AiHub::add_backend_with`], given up as soon as `cancel` is set, including while an SSH
+    /// host is being checked for the agent.
+    pub fn add_backend_with_until(&self, entry: BackendEntry, key: Option<String>, cancel: &CancelToken) -> Result<(), ToolError> {
+        self.add_backend_with_check(entry, key, cancel, verify_remote_agent)
+    }
+
+    /// [`AiHub::add_backend_with_until`], with the remote-agent check passed in so tests can
+    /// stand in for ssh.
     fn add_backend_with_check(
         &self,
         entry: BackendEntry,
         key: Option<String>,
-        mut check: impl FnMut(&str, &str) -> Result<(), ToolError>,
+        cancel: &CancelToken,
+        mut check: impl FnMut(&str, &str, &CancelToken) -> Result<(), ToolError>,
     ) -> Result<(), ToolError> {
+        cancel.check()?;
         if entry.config.name.trim().is_empty() {
             return Err(ToolError::invalid("A backend needs a name."));
         }
         // A host from ~/.ssh/config is a suggestion, not proof that it has the agent (#62): an
         // agent added for one is checked there first, and nothing is saved when it's absent.
+        // `options.command` (a remote path or wrapper) is the program checked when one is given.
         if entry.config.kind == BackendKind::AgentCli
             && let Some(host) = entry.config.ssh_host.as_deref().map(str::trim).filter(|h| !h.is_empty())
         {
             let program = crate::cli_agents::program_of(&entry.config, &entry.options)?;
-            check(host, &program)?;
+            check(host, &program, cancel)?;
         }
+        // A Connect job cancelled during the check leaves nothing behind.
+        cancel.check()?;
         let mut cfg = self.config_to_change()?;
         if let Some(k) = key.filter(|k| !k.trim().is_empty()) {
             self.keys.set(&entry.config.name, k.trim())?;
         }
         cfg.upsert(entry);
         give_session_id(&mut cfg);
+        cancel.check()?;
         self.save_config(&cfg)
     }
 

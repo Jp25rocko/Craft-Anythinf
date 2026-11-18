@@ -184,25 +184,60 @@ fn an_ssh_agent_is_checked_before_it_is_added() {
         enabled: true,
     };
     let mut asked = Vec::new();
-    let refused = h.add_backend_with_check(BackendEntry { config: config("Claude on pi5"), options: BackendOptions::default() }, None, |host, program| {
-        asked.push((host.to_string(), program.to_string()));
-        Err(ToolError::new(ErrorCode::EngineMissing, "not installed"))
-    });
+    let refused = h.add_backend_with_check(
+        BackendEntry { config: config("Claude on pi5"), options: BackendOptions::default() },
+        None,
+        &CancelToken::default(),
+        |host, program, _| {
+            asked.push((host.to_string(), program.to_string()));
+            Err(ToolError::new(ErrorCode::EngineMissing, "not installed"))
+        },
+    );
     assert!(refused.is_err());
     assert_eq!(asked, [("pi5".to_string(), "claude".to_string())], "the host and its program are checked");
     assert!(h.config().backends.is_empty(), "a refused agent saves nothing");
-    let added = h.add_backend_with_check(BackendEntry { config: config("Claude on pi5"), options: BackendOptions::default() }, None, |_, _| Ok(()));
+    // A command given for that host is the one checked, so the default name need not be there.
+    let mut custom = None;
+    let with_command = BackendOptions { command: Some("/opt/claude/bin/claude".into()), ..Default::default() };
+    let added =
+        h.add_backend_with_check(BackendEntry { config: config("Claude on pi5"), options: with_command }, None, &CancelToken::default(), |_, program, _| {
+            custom = Some(program.to_string());
+            Ok(())
+        });
     assert!(added.is_ok());
+    assert_eq!(custom.as_deref(), Some("/opt/claude/bin/claude"));
     assert!(h.config().backends.iter().any(|b| b.config.name == "Claude on pi5"));
     // An agent on this computer is not checked on a host.
     let local = BackendConfig { name: "Local".into(), kind: BackendKind::AgentCli, model: "claude-code".into(), base_url: None, ssh_host: None, enabled: true };
     let mut checked = false;
-    h.add_backend_with_check(BackendEntry { config: local, options: BackendOptions::default() }, None, |_, _| {
+    h.add_backend_with_check(BackendEntry { config: local, options: BackendOptions::default() }, None, &CancelToken::default(), |_, _, _| {
         checked = true;
         Ok(())
     })
     .unwrap();
     assert!(!checked, "a local agent needs no remote check");
+}
+
+/// A Connect job cancelled during the remote check saves nothing.
+#[test]
+fn a_cancelled_connect_does_not_save_an_ssh_agent() {
+    let (h, _d) = hub();
+    let config = BackendConfig {
+        name: "Claude on pi5".into(),
+        kind: BackendKind::AgentCli,
+        model: "claude-code".into(),
+        base_url: None,
+        ssh_host: Some("pi5".into()),
+        enabled: true,
+    };
+    let stop = CancelToken::default();
+    let inside = stop.clone();
+    let result = h.add_backend_with_check(BackendEntry { config, options: BackendOptions::default() }, None, &stop, move |_, _, _| {
+        inside.cancel();
+        Ok(())
+    });
+    assert_eq!(result.unwrap_err().code, ErrorCode::Cancelled);
+    assert!(h.config().backends.is_empty(), "a cancelled check saves nothing");
 }
 
 /// The remote check's exit status becomes a message a person can act on, with the exact command.
@@ -679,7 +714,13 @@ fn claude_codes_folder_is_set_per_ai() {
     h.add_backend(claude("Claude Code", None), None).unwrap();
     h.add_backend(claude("Claude Code 2", None), None).unwrap();
     // An SSH host is checked on adding; this test is about config folders, so the check stands in.
-    h.add_backend_with_check(BackendEntry { config: claude("Claude on box", Some("box")), options: BackendOptions::default() }, None, |_, _| Ok(())).unwrap();
+    h.add_backend_with_check(
+        BackendEntry { config: claude("Claude on box", Some("box")), options: BackendOptions::default() },
+        None,
+        &CancelToken::default(),
+        |_, _, _| Ok(()),
+    )
+    .unwrap();
     h.add_backend(BackendConfig { model: "codex".into(), ..claude("Codex", None) }, None).unwrap();
     let folder = |h: &AiHub, name: &str| h.options().get(name).and_then(|o| o.config_dir.clone());
     assert!(h.set_config_dir("Claude Code 2", Some(" ~/.claude-work ")).unwrap());
