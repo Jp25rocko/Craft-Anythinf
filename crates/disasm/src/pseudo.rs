@@ -51,6 +51,9 @@ struct InlineExpr {
     idx: usize,
     expr: String,
     deps: Vec<String>,
+    /// The memory the expression reads, if any: a later store that may overlap it changes the
+    /// value, so the expression can't move past that store.
+    mem: Option<MemOp>,
 }
 
 /// Latest assignment to a register or outgoing stack slot in the current basic block.
@@ -71,6 +74,38 @@ fn invalidate_dependents<K: Ord>(map: &mut BTreeMap<K, PendingAssign>, written: 
     for assign in map.values_mut() {
         if assign.inline.as_ref().is_some_and(|e| e.deps.iter().any(|r| written.contains(r))) {
             assign.inline = None;
+        }
+    }
+}
+
+/// Clear `inline` on pending assignments whose expression reads memory that a store to `written`
+/// may overlap.
+fn invalidate_memory_readers(map: &mut BTreeMap<String, PendingAssign>, written: &MemOp) {
+    for assign in map.values_mut() {
+        if assign.inline.as_ref().and_then(|e| e.mem.as_ref()).is_some_and(|read| may_overlap(read, written)) {
+            assign.inline = None;
+        }
+    }
+}
+
+/// Whether two memory operands can share a byte. Without a known overlap they are assumed to:
+/// only the same absolute address range, or the same base and index with displacements far enough
+/// apart, are told apart, and a frame slot never overlaps an absolute address.
+fn may_overlap(a: &MemOp, b: &MemOp) -> bool {
+    let width = |m: &MemOp| i64::from(if m.size == 0 { 8 } else { m.size });
+    let apart = |x: i64, wx: i64, y: i64, wy: i64| x.saturating_add(wx) <= y || y.saturating_add(wy) <= x;
+    let frame = |m: &MemOp| m.addr.is_none() && m.base.as_deref().is_some_and(|r| matches!(canonical_reg(r).as_str(), "rsp" | "rbp" | "sp" | "x29"));
+    match (a.addr, b.addr) {
+        (Some(x), Some(y)) => !apart(x as i64, width(a), y as i64, width(b)),
+        (Some(_), None) => !frame(b),
+        (None, Some(_)) => !frame(a),
+        (None, None) => {
+            let same = |p: &Option<String>, q: &Option<String>| p.as_deref().map(canonical_reg) == q.as_deref().map(canonical_reg);
+            if same(&a.base, &b.base) && same(&a.index, &b.index) && a.scale == b.scale && a.index_shift == b.index_shift {
+                !apart(a.disp, width(a), b.disp, width(b))
+            } else {
+                true
+            }
         }
     }
 }
@@ -359,6 +394,9 @@ impl Lifter<'_> {
         let mut dead: BTreeSet<usize> = BTreeSet::new();
         // Win64 outgoing stack arguments stored in this block: rsp offset → pending assignment.
         let mut stack_args: BTreeMap<i64, PendingAssign> = BTreeMap::new();
+        // Registers assigned in this block whose assignment a later read took out of `defs`:
+        // still set here, so a memory-indirect call's base among them is still an argument.
+        let mut read_after_set: BTreeSet<String> = BTreeSet::new();
         for (k, i) in insns.iter().enumerate() {
             let exclusive_memory = self.mode == Mode::A64
                 && matches!(
@@ -389,9 +427,53 @@ impl Lifter<'_> {
             // A register read by a later instruction (including an indirect call's target,
             // address base/index, or pointer-authentication modifier) keeps its assignment
             // instead of being folded away as a call argument.
+            //
+            // The base of a memory-indirect call (`call [rdi + 16]`) is usually the object the
+            // callee is reached through, so an argument register there still counts as an
+            // argument: it is passed by name and its assignment stays visible. A register target,
+            // an index or a modifier only addresses the callee.
+            let call_base = match (&i.flow, i.ops.first()) {
+                (Flow::IndirectCall { .. }, Some(Op::Mem(m))) => m.base.as_deref().map(canonical_reg),
+                _ => None,
+            };
             for r in &i.reads {
-                defs.remove(r);
                 consts.remove(r);
+                if call_base.as_ref() == Some(r) {
+                    if let Some(base) = defs.get_mut(r) {
+                        base.inline = None;
+                        continue;
+                    }
+                    if read_after_set.contains(r) {
+                        defs.insert(r.clone(), PendingAssign { target: r.clone(), inline: None });
+                        continue;
+                    }
+                }
+                if defs.remove(r).is_some() {
+                    read_after_set.insert(r.clone());
+                }
+            }
+            for w in &i.writes {
+                read_after_set.remove(w);
+            }
+            // A store moves no load past it that may read the bytes it writes.
+            if let Some(Op::Mem(m)) = match i.kind {
+                Kind::Store | Kind::StorePair => i.ops.iter().find(|o| matches!(o, Op::Mem(_))),
+                Kind::Mov
+                | Kind::Add
+                | Kind::Sub
+                | Kind::And
+                | Kind::Or
+                | Kind::Xor
+                | Kind::Inc
+                | Kind::Dec
+                | Kind::Not
+                | Kind::Neg
+                | Kind::Shl
+                | Kind::Shr
+                | Kind::Sar => i.ops.first(),
+                _ => None,
+            } {
+                invalidate_memory_readers(&mut defs, m);
             }
             // AArch64 page loads and import-slot loads are shown through what uses them.
             if i.kind == Kind::Adrp
@@ -419,9 +501,18 @@ impl Lifter<'_> {
             let mut stmt: Option<String> = None;
             // set when this statement leaves its destination holding a known constant
             let mut const_def: Option<(String, u64)> = None;
-            let dest_reg = match i.ops.first() {
-                Some(Op::Reg(r)) => Some(canonical_reg(r)),
+            // A store's first operand is the register it reads (`str r1, [r4]`), not a destination:
+            // recording it would fold the store's own statement away as that register's value.
+            let dest_reg = match (i.kind, i.ops.first()) {
+                (Kind::Store | Kind::StorePair, _) => None,
+                (_, Some(Op::Reg(r))) => Some(canonical_reg(r)),
                 _ => None,
+            };
+            // The memory this instruction's value comes from (a load, or an operation with a memory
+            // source); `lea` only computes an address.
+            let read_mem = match i.kind {
+                Kind::Lea | Kind::Store | Kind::StorePair => None,
+                _ => i.ops.iter().skip(1).find_map(|o| if let Op::Mem(m) = o { Some(m.clone()) } else { None }),
             };
             let frame_reg = |r: &str| matches!(canonical_reg(r).as_str(), "rsp" | "rbp" | "sp" | "x29" | "x30");
             match (i.kind, &i.flow) {
@@ -495,6 +586,7 @@ impl Lifter<'_> {
                     stmt = Some(if uses_ret == Some(true) { format!("{} = {call};", self.ret_reg_name()) } else { format!("{call};") });
                     // Calls clobber argument registers.
                     defs.clear();
+                    read_after_set.clear();
                     consts.clear();
                 }
                 (_, Flow::Return) => {
@@ -523,8 +615,18 @@ impl Lifter<'_> {
                     }
                 }
                 (_, Flow::IndirectJump { slot }) => {
-                    stmt = Some(match slot.and_then(|s| self.prog.import_slots.get(&s)) {
-                        Some(si) => format!("return {}(); /* tail call */", si.name),
+                    let import = slot.and_then(|s| self.prog.import_slots.get(&s)).map(|si| si.name.clone());
+                    stmt = Some(match import {
+                        // A jump through an import slot (an x86 `jmp [slot]` or ARM `ldr pc` GOT
+                        // thunk) is a tail call: it passes the block's argument registers and is
+                        // recorded like any other call.
+                        Some(name) => {
+                            if self.calls.len() < 512 {
+                                self.calls.insert(name.clone());
+                            }
+                            let args = self.reg_args(&defs, &mut dead, crate::arity::import_arity(&name).unwrap_or(0));
+                            format!("return {name}({}); /* tail call */", args.join(", "))
+                        }
                         None => format!("goto *{}; /* computed jump */", d.clone().unwrap_or_default()),
                     });
                 }
@@ -695,14 +797,18 @@ impl Lifter<'_> {
                 {
                     let target = lhs.trim().to_string();
                     let v = rhs.trim_end_matches(';').to_string();
-                    stack_args.insert(m.disp, PendingAssign { target, inline: Some(InlineExpr { idx: stmts.len() - 1, expr: v, deps: i.reads.clone() }) });
+                    stack_args
+                        .insert(m.disp, PendingAssign { target, inline: Some(InlineExpr { idx: stmts.len() - 1, expr: v, deps: i.reads.clone(), mem: None }) });
                 }
                 if let Some(r) = &dest_reg {
                     let expr = stmts.last().and_then(|l| l.split_once(" = ").map(|(_, e)| e.trim_end_matches(';').to_string()));
                     match expr {
                         Some(e) if !e.contains(';') && !matches!(i.flow, Flow::Call { .. } | Flow::IndirectCall { .. }) => {
                             let deps = if const_def.is_some() { Vec::new() } else { i.reads.clone() };
-                            defs.insert(r.clone(), PendingAssign { target: r.clone(), inline: Some(InlineExpr { idx: stmts.len() - 1, expr: e, deps }) });
+                            defs.insert(
+                                r.clone(),
+                                PendingAssign { target: r.clone(), inline: Some(InlineExpr { idx: stmts.len() - 1, expr: e, deps, mem: read_mem.clone() }) },
+                            );
                         }
                         _ => {
                             defs.remove(r);

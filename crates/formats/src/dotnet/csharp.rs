@@ -1193,6 +1193,7 @@ fn norm_type_scoped(s: &str, keep_namespace: bool, scope_ctx: Option<(&str, &Kno
                     && !after_member_dot
                     && !shadowed
                     && !is_system_builtin
+                    && alias.is_none()
                     && !word_out.contains('.')
                     && !is_reserved_predefined_type_keyword(word_out);
                 word_allows_fallback.push(allow_fallback);

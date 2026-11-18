@@ -745,6 +745,13 @@ yet, and the quick start is how every new person begins.
       612, `only_left` 29746, `only_right` 32342); it ran the line-up once and every browse
       call asked for `pairs`, none failed (22 calls, $1.06)
       — claimed: chordpli, branch bugfix/r5.7-browse-list-names
+- [x] Count only names that `find_result_key` resolves to arrays toward `result_lists`'s 64-list
+      cap and collect shallower object levels before deeper ones so shadowed or nested sub-lists
+      never crowd out top-level pageable lists (`crates/evidence/src/lib.rs`).
+      — claimed: Plastic-time, branch bugfix/r5.7-evidence-result-lists
+- [x] Find what every name reaches in one walk instead of one `find_result_key` from the root
+      per array name, so `result_lists` stays linear in the result's size (#2107 follow-up)
+      — claimed: Plastic-time, branch bugfix/r5.7-result-lists-first-match-map
 - [x] `app_builds_line_up` paired 1,448 of ~36,000 functions across two Rust toolchains: every
       v0 crate hash (`Cs<hash>_`) changed, so exact names rarely match, and some masked-bytes
       pairs are unrelated functions (`hex_encode` → `_git_oid_tostr`). Compare Rust names with
@@ -1229,6 +1236,10 @@ Owner: open · Status: in progress
       — claimed: Plastic-time, branch bugfix/r2.2-yaml-config-bom
 - [x] Match YAML block mapping keys across optional whitespace before the colon and require a mapping-indicator boundary after it, so `mcp_servers :` is updated in place and plain keys containing colons (`craft-anything:dev`) are left untouched.
       — claimed: Plastic-time, branch bugfix/r2.2-yaml-mapping-key-boundaries
+- [x] Report dedicated `ActionKind::Invalid` uninstall diagnostics and remediations when a config blocks `setup::uninstall` (unremovable flow/escaped entries, malformed syntax, invalid UTF-8, or I/O errors), and distinguish invalid UTF-8 from permission errors across `plan`, `doctor`, and `uninstall`.
+      — claimed: Plastic-time, branch bugfix/r2.2-uninstall-blocking-diagnostics
+- [x] Keep each config read error's own advice (a folder at the config path, invalid UTF-8, the I/O error itself), advise fixing a blocked config where it is, and print each uninstall blocker's reason and fix in the CLI.
+      — claimed: Plastic-time, branch bugfix/r2.2-uninstall-blocker-advice
 - [ ] See whether Hermes still fails on 0.3.0 (#460: the fix its `fixed` label names was already in
       0.3.0 when it was filed, and it gives no version)
 
@@ -1942,6 +1953,19 @@ Gaps found while using the app for real projects.
 - [x] Theme gets a System choice, the new default, that follows the system's light or dark
       appearance and changes with it (the switches' slide to a new choice landed with #1862)
       — claimed: jgt87, branch feature/r2.9-sliding-switch-system-theme — PR #1234
+- [x] Make → "What do you want to recreate?" offers Simple / Advanced, and always shows Clean room /
+      Deep: Simple mode's title bar had no mode switch, so only Settings offered it, and the
+      Clean room / Deep tiles appeared only once an original was picked (the switch is now beside
+      the ways in on Make; with no original, the tiles show dimmed and say they apply once there
+      is one)
+      — claimed: jgt87, branch feature/r2.9-make-choices — PR #1286
+- [x] The app's version can be seen inside it on every system: only macOS's menu bar had an About,
+      and the About dialog in `home.rs` was never opened (#1300)
+      — claimed: jgt87, branch feature/r2.9-show-version — PR #1301
+- [ ] Settings fits a small window at high zoom: it's 680 points wide with a page up to 560 tall,
+      so at 2× zoom in the smallest window (760×520, 380×260 points) its tab list starts off the
+      left edge and the dialog runs off the bottom. Fit the dialog to the window, with the tab
+      list scrolling when it must (found in #1301's review)
 - [x] Simple and Advanced use one text size and spacing: switching modes changes what is shown, not
       how big everything is (Simple set 16 pt text and roomier controls, Advanced 13 pt, so the
       whole window seemed to zoom). Zoom (Cmd/Ctrl + / −) stays the way to make everything bigger.
@@ -2108,6 +2132,10 @@ Owner: open · Status: in progress
       — claimed: Plastic-time, branch bugfix/r3.11-pseudo-call-arg-deps
 - [x] Keep assignments to indirect-call target, memory-base, and pointer-authentication modifier registers out of folded callee argument lists in pseudo-C.
       — claimed: Plastic-time, branch bugfix/r3.11-pseudo-indirect-call-target
+- [x] Pass an argument register used as a memory-indirect call's base as the call's argument, keep the static address of A32 PC-relative stores, and give import tail calls through `ldr pc`/`jmp [slot]` their register arguments and a `Pseudo.calls` entry.
+      — claimed: Plastic-time, branch bugfix/r3.11-pseudo-call-args
+- [x] Keep a memory-indirect call's base argument after an earlier read of it, keep argument loads before stores that may overwrite what they read, stop recording a store's source register as an assignment in pseudo-C, and record A32 `STRB`/`STRH`/`STRD` source registers as read (#2114 follow-up).
+      — claimed: Plastic-time, branch bugfix/r3.11-pseudo-call-arg-followups
 - [ ] `native_source_folder_write` uses the built-in decompiler only: use Ghidra in Deep mode when
       it's there
 - [x] Keep source registers alive when an AArch64 arithmetic result is discarded into the zero register.
@@ -2188,7 +2216,7 @@ Owner: open · Status: in progress
       kept every folder and link, so a tree of empty folders or links, or one huge folder, had no
       limit. `WalkLimits` bounds the entries examined and the path bytes held (from the file limit,
       4,000,000 entries at most); one folder is listed through a bounded first-names-in-order
-      selection, so a cut listing is the same every time; the walk stops at the first file or entry
+      selection (later read only as far as the limits, below); the walk stops at the first file or entry
       over a limit; cancel is checked while a folder is read. An ASAR's `.unpacked` folder and
       `source_paths` folders say when their listing was cut. The tree-of-links test skipped itself
       on the Windows account used (it can't create links); it needs a run on Linux or macOS
@@ -2198,6 +2226,22 @@ Owner: open · Status: in progress
       — claimed: AlexJoaquimPereira, branch bugfix/r3.11-gitignore-read-cap
 - [ ] The walk's limits are chosen, not measured (4,000,000 entries at most, 256 path bytes an
       entry): time a walk at the ceiling on a real disk and measure what it holds
+- [x] That walk still read a folder to its end to pick its first names in order (100,000 entries
+      read for a limit of 2), and skipped entries that failed to read in silence: 64 failures in a
+      row came back as an empty folder listed in full. A folder is now read only as far as the
+      walk's entry and path-byte limits go, and one entry more that says the folder holds more, so
+      a whole walk takes at most its entry limit plus one from the system; cancel is looked at
+      before every read. A cut listing holds the entries the system returned first, sorted by name
+      (no longer the folder's first names in order, so the same cut every time only where the
+      system lists an unchanged folder in the same order). Entries that couldn't be read, while
+      listing or when looked at, mark the walk as cut short and put their folder in `unlisted` with
+      a count and the first reason (`.` for the root). The notes that named only the file-count or
+      depth limit name every limit. An entry that is there but can't be looked at was run with a
+      made-up name only, not with a real permission failure
+- [ ] Five calls of `walk_dir` (`apple_tools` twice, `application_tools`, `managed_tools`,
+      `web_tools`) read only `truncated`, so a folder with unreadable entries reads there as "cut
+      short" without naming the folder or the reason: pass `unlisted` on as `core_archive_show` does
+      — claimed: hichang4u, branch bugfix/r3.11-walk-entry-reads
 - [x] `core_archives_compare` reports `rows_capped` and a partial-coverage limitation when the
       added, removed, changed or moved lists are cut at `max_rows`, while its counts stay complete.
       — claimed: AlexJoaquimPereira, branch bugfix/r3.11-archive-compare-rows
@@ -2225,6 +2269,10 @@ Owner: open · Status: in progress
       — claimed: Afloat16, branch bugfix/r3.12-pyc-truncated-text-evidence-20261110
 - [x] Keep worker, service-worker and utility-process entry modules in their own execution role instead of inheriting the parent role through spawn edges.
       — claimed: Afloat16, branch bugfix/r3.12-worker-role-boundaries
+- [x] Point `js_ledger` `storage`, methodless `endpoint`, and listed `.node` expectations at their actual `AppGraph` `source_node` IDs, deduplicate candidate expectations by `expectation_id`, and aggregate all `Binding` records from the same owner without dropping later cases or hiding a failing verifier.
+      — claimed: Plastic-time, branch bugfix/r3.12-js-ledger-storage-and-bindings
+- [x] Check each evidence id once per `js_ledger` build so a result published mid-build can't prove a row with no selected result, require a selected verifier result for `proven`, and break verifier ties by strength and status so gap messages don't depend on binding order.
+      — claimed: Plastic-time, branch bugfix/r3.12-js-ledger-verifier-ties
 - [x] Read the explicit module-format byte in current Node SEA blobs while retaining the older layouts;
       report the stored format and recover the main script, assets and execution arguments at their real offsets.
       — claimed: Afloat16, branch bugfix/r3.12-node-sea-module-format-20261110
@@ -2240,6 +2288,15 @@ Owner: open · Status: in progress
       limitation says a list was cut; resolve every retained import, report facts truncation, and
       make `js_app_map` coverage partial.
       — claimed: AlexJoaquimPereira, branch bugfix/r3.12-import-facts-truncation
+- [x] Exclude `.d.mts` and `.d.cts` declaration files from `js_app` script modules and import resolution, and resolve TypeScript `.js`/`.mjs`/`.cjs`/`.jsx` → `.ts`/`.tsx`/`.mts`/`.cts` source specifiers, `.mts`/`.cts` modules, directory `index` files, and Electron preload paths in unbuilt TypeScript trees.
+      — claimed: Plastic-time, branch bugfix/r3.12-js-app-typescript-resolution
+- [x] #2097 follow-up: in `js_app`, check exact (and ambiguous) tails before TypeScript source
+      fallbacks, strip `?query`/`#fragment` before tail lookups, skip scheme-relative HTML
+      references, keep local references whose query holds a URL, and stop turning unresolved
+      HTML script/preload paths into `external:*` packages.
+      — claimed: Plastic-time, branch bugfix/r3.12-js-app-tail-order-and-html-refs
+- [x] Treat any URL scheme of two or more characters (`data:`, `blob:`; one letter before `:` is read as a Windows drive) in `js_app` HTML refs and remote window loads as external, read HTML `src`/`href` without surrounding spaces, normalise exact tails before lookup, keep files in a `node_modules` directory segment out of tail matches, and look tails up in one index per analysis instead of scanning the inventory per reference.
+      — claimed: Plastic-time, branch bugfix/r3.12-js-app-tail-resolution
 - [x] Preserve webpack factory parameter names when direct eval can read them.
       — claimed: Plastic-time, branch bugfix/r3.12-js-eval-param-renaming-1115
 - [x] Preserve void zero expressions when a with statement can dynamically resolve undefined.
@@ -2379,6 +2436,8 @@ Owner: open · Status: in progress
       part as an integer and turns it back into a REAL when it reads the column, so a REAL, FLOAT
       or DOUBLE column holding 1.0 shows 1.0 instead of 1.
       — claimed: Chr0mium24, branch bugfix/r3.12-sqlite-real-affinity
+- [x] Tokenize tight SQLite `CREATE TABLE` identifiers, declared type spans, adjacent column constraints, signed or leading-dot `DEFAULT` clauses (`DEFAULT-5`, `DEFAULT.5`), and semicolon-terminated table options (`STRICT;`, `WITHOUT ROWID;`) without whitespace (#2108). — claimed: Plastic-time, branch bugfix/r3.12-sqlite-tight-type-and-clause-tokens
+- [x] Read `DEFAULT+X'41'` as the blob, and bare `DEFAULT` words with non-ASCII characters or a later `$` as their text, as SQLite does for rows written before the column was added, and skip a byte order mark where a token starts; the `--` after `e` fixture is DDL SQLite creates (#2108 follow-up). — claimed: Plastic-time, branch bugfix/r3.12-sqlite-default-followups
 - [x] Require a complete DNS question's type and class fields before retaining it, and keep
       truncated questions out of packet inventories while reporting the incomplete message
       — claimed: Afloat16, branch bugfix/r3.12-dns-question-class-review-20261104
@@ -2840,6 +2899,8 @@ Owner: open · Status: in progress
 - [x] Normalize C# metadata `/` nested-type separators, `global::` qualifiers, `ref` parameter modifiers, non-`System` built-in-named types, and zero-based multidimensional array bounds in `dotnet::csharp` reconciliation. — claimed: Plastic-time, branch bugfix/r3.12-csharp-type-normalization
 - [x] Resolve unqualified CLR built-in aliases inside C# conversion targets (including generic arguments under qualified outer types) against enclosing scopes and known types so unshadowed `String` matches `string` even alongside `Other.String` while local `App.String` stays distinct. — claimed: Plastic-time, branch bugfix/r3.12-csharp-conversion-builtin-aliases
 - [x] Resolve C# contextual type keywords (`nint`, `nuint`, `dynamic`) against declared types before built-in fallback, and prefer scope-resolved generic arguments over alias expansion in conversion terminal fallback. — claimed: Plastic-time, branch bugfix/r3.12-csharp-contextual-keywords-and-fallback
+- [x] Keep CLR alias-expanded `nint`/`nuint` generic arguments (`List<IntPtr>`, `List<UIntPtr>`) exact-match-only rather than falling back to imported `Other.nint`/`Other.nuint`.
+      — claimed: Plastic-time, branch bugfix/r3.12-csharp-alias-expanded-nint-fallback
 - [x] Reject CIL branch and switch destinations outside the method body without wrapping signed displacements.
       — claimed: Afloat16, branch bugfix/r3.12-cil-branch-target-ranges-20261111
 - [x] Validate CIL method exception-section kinds, extents and complete clause records before reading exception handlers.
@@ -3232,6 +3293,9 @@ Owner: open · Status: in progress
 - [x] Honour leading backslash wildcard escapes, escaped trailing spaces, slash-bounded `**`
       segments, and excluded parent-directory propagation in `js_source::Ignore`.
       — claimed: Plastic-time, branch bugfix/r3.12-gitignore-pattern-rules
+- [x] Recognize an escaped slash (`\/`) after a `**` globstar segment in `js_source::Ignore`
+      while preserving the separate literal slash token.
+      — claimed: Plastic-time, branch bugfix/r3.12-gitignore-globstar-escaped-slash
 
 
 - [x] Take target file signatures from the shared craft-sniff table. The app still breaks ties

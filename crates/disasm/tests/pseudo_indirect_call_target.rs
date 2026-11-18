@@ -120,51 +120,42 @@ fn x64_memory_indirect_call_preserves_base_and_index_assignments() {
     assert!(out_idx.text.contains("(**(uint64_t*)(rax + rcx * 8))();"), "indexed indirect call must not invent rdi/rsi/rdx/rcx args:\n{}", out_idx.text);
 }
 
-/// AArch64 `blr x3` through a non-import global pointer slot (`g_callback`) and `blraa x1, x2`
-/// must not fold the callee register or pointer-authentication modifier into the argument list,
-/// while import-slot `blr x3` still elides the GOT load and ordinary direct `bl` calls fold args.
+/// A dispatch-table base register that is the only argument register set still passes as the
+/// call's one argument, with its assignment kept, as it does when a second argument follows.
 #[test]
-fn aarch64_global_slot_and_authenticated_indirect_calls_exclude_callee_and_modifier() {
-    // Subcase A: adrp x3, 0x2000; ldr x3, [x3, #0x10]; mov w0, #9; blr x3; ret
+fn x64_memory_indirect_call_passes_a_lone_base_register_argument() {
+    // 0x1000: mov rdi, [rbp - 8] (48 8b 7d f8); call qword ptr [rdi + 0x10] (ff 57 10); ret (c3)
+    let code = vec![0x48, 0x8b, 0x7d, 0xf8, 0xff, 0x57, 0x10, 0xc3];
+    let mut bin = Binary::raw(Arch::X86_64, 0x1000, code.len() as u64, 0);
+    bin.entry = Some(0x1000);
+    let img = Image::from_binary(Arc::from(code), bin);
+    let prog = Program::analyze(&img, &Limits::default(), &NoControl).expect("analyze one-argument base-indirect call");
+    let out = lift(&img, &prog, prog.functions.get(&0x1000).expect("entry"), &|_| None);
+
+    assert!(out.text.contains("rdi = var_8;"), "dispatch-table base assignment must not be deleted:\n{}", out.text);
+    assert!(out.text.contains("(**(uint64_t*)(rdi + 16))(rdi);"), "one-argument dispatch-table call must pass rdi:\n{}", out.text);
+}
+
+/// `adrp x3, 0x2000; ldr x3, [x3, #0x10]; mov w0, #9; blr x3; ret` at 0x1000.
+fn aarch64_slot_call_bytes() -> Vec<u8> {
     let words_slot = [0xb000_0003u32, 0xf940_0863, 0x5280_0120, 0xd63f_0060, 0xd65f_03c0];
     let mut bytes_slot = vec![0u8; 0x1020];
     for (idx, w) in words_slot.into_iter().enumerate() {
         bytes_slot[idx * 4..(idx + 1) * 4].copy_from_slice(&w.to_le_bytes());
     }
-    let mut bin_slot = Binary::raw(Arch::Aarch64, 0x1000, bytes_slot.len() as u64, 0);
-    bin_slot.entry = Some(0x1000);
-    bin_slot.symbols.push(Symbol {
-        name: "g_callback".into(),
-        demangled: None,
-        addr: 0x2010,
-        size: 8,
-        kind: SymbolKind::Data,
-        global: true,
-        weak: false,
-        defined: true,
-        dynamic: false,
-    });
-    let img_slot = Image::from_binary(Arc::from(bytes_slot.clone()), bin_slot);
-    let prog_slot = Program::analyze(&img_slot, &Limits { scan_prologues: false, ..Limits::default() }, &NoControl).expect("analyze A64 slot");
-    let out_slot = lift(&img_slot, &prog_slot, prog_slot.functions.get(&0x1000).expect("entry"), &|_| None);
+    bytes_slot
+}
 
-    assert!(out_slot.text.contains("x3 = g_callback;"), "non-import slot load must remain visible:\n{}", out_slot.text);
-    assert!(out_slot.text.contains("g_callback(9);"), "A64 global slot call must pass only w0:\n{}", out_slot.text);
-    assert!(!out_slot.text.contains("g_callback(9, x1"), "must not pass x1..x3:\n{}", out_slot.text);
+/// The pseudo-C of the function at `entry` in an AArch64 image.
+fn aarch64_lift(bin: Binary, bytes: Vec<u8>, entry: u64) -> String {
+    let img = Image::from_binary(Arc::from(bytes), bin);
+    let prog = Program::analyze(&img, &Limits { scan_prologues: false, ..Limits::default() }, &NoControl).expect("analyze A64 image");
+    lift(&img, &prog, prog.functions.get(&entry).expect("function"), &|_| None).text
+}
 
-    // Control A2: when 0x2010 IS an import slot (`custom_imp`), `ldr x3` is still elided cleanly.
-    let mut bin_imp = Binary::raw(Arch::Aarch64, 0x1000, bytes_slot.len() as u64, 0);
-    bin_imp.entry = Some(0x1000);
-    bin_imp.import_slots.push(ImportSlot { addr: 0x2010, name: "custom_imp".into(), library: Some("libc.so".into()), kind: "got" });
-    let img_imp = Image::from_binary(Arc::from(bytes_slot), bin_imp);
-    let prog_imp = Program::analyze(&img_imp, &Limits { scan_prologues: false, ..Limits::default() }, &NoControl).expect("analyze A64 import slot");
-    let out_imp = lift(&img_imp, &prog_imp, prog_imp.functions.get(&0x1000).expect("entry"), &|_| None);
-
-    assert!(!out_imp.text.contains("x3 ="), "import-slot load must remain elided:\n{}", out_imp.text);
-    assert!(out_imp.text.contains("custom_imp(9);"), "import-slot call must pass w0:\n{}", out_imp.text);
-
-    // Subcase B: mov w0, #5; mov x1, x19; mov x2, x20; blraa x1, x2; ret
-    // plus direct callee at 0x1020 and direct `bl` control at 0x1030.
+/// `blraa x1, x2` at 0x1000 (after `mov w0, #5; mov x1, x19; mov x2, x20`) and a direct
+/// `direct_caller` at 0x1030 that sets w0 and w1 before `bl 0x1020`.
+fn aarch64_pac_and_direct_image() -> (Binary, Vec<u8>) {
     let mut words_pac = [0xd503_201fu32; 20];
     words_pac[0] = 0x5280_00a0; // 0x1000: mov w0, #5
     words_pac[1] = 0xaa13_03e1; // 0x1004: mov x1, x19
@@ -190,14 +181,77 @@ fn aarch64_global_slot_and_authenticated_indirect_calls_exclude_callee_and_modif
         defined: true,
         dynamic: false,
     });
-    let img_pac = Image::from_binary(Arc::from(bytes_pac), bin_pac);
-    let prog_pac = Program::analyze(&img_pac, &Limits { scan_prologues: false, ..Limits::default() }, &NoControl).expect("analyze A64 PAC");
+    (bin_pac, bytes_pac)
+}
 
-    let out_pac = lift(&img_pac, &prog_pac, prog_pac.functions.get(&0x1000).expect("PAC entry"), &|_| None);
-    assert!(out_pac.text.contains("x1 = x19;"), "PAC target assignment must remain visible:\n{}", out_pac.text);
-    assert!(out_pac.text.contains("x2 = x20;"), "PAC modifier assignment must remain visible:\n{}", out_pac.text);
-    assert!(out_pac.text.contains("(*x1)(5);"), "blraa x1, x2 must pass only w0:\n{}", out_pac.text);
+/// AArch64 `blr x3` through a non-import global pointer slot (`g_callback`) must not fold the
+/// callee register into the argument list.
+#[test]
+fn aarch64_global_slot_call_excludes_the_callee_register() {
+    let bytes_slot = aarch64_slot_call_bytes();
+    let mut bin_slot = Binary::raw(Arch::Aarch64, 0x1000, bytes_slot.len() as u64, 0);
+    bin_slot.entry = Some(0x1000);
+    bin_slot.symbols.push(Symbol {
+        name: "g_callback".into(),
+        demangled: None,
+        addr: 0x2010,
+        size: 8,
+        kind: SymbolKind::Data,
+        global: true,
+        weak: false,
+        defined: true,
+        dynamic: false,
+    });
+    let out_slot = aarch64_lift(bin_slot, bytes_slot, 0x1000);
+    assert!(out_slot.contains("x3 = g_callback;"), "non-import slot load must remain visible:\n{out_slot}");
+    assert!(out_slot.contains("g_callback(9);"), "A64 global slot call must pass only w0:\n{out_slot}");
+    assert!(!out_slot.contains("g_callback(9, x1"), "must not pass x1..x3:\n{out_slot}");
+}
 
-    let out_direct = lift(&img_pac, &prog_pac, prog_pac.functions.get(&0x1030).expect("direct_caller"), &|_| None);
-    assert!(out_direct.text.contains("sub_1020(5, 6);"), "direct bl control must still fold w0 and w1:\n{}", out_direct.text);
+/// Control: when the slot is an import slot (`custom_imp`), `ldr x3` is still elided cleanly.
+#[test]
+fn aarch64_import_slot_call_elides_the_got_load() {
+    let bytes_slot = aarch64_slot_call_bytes();
+    let mut bin_imp = Binary::raw(Arch::Aarch64, 0x1000, bytes_slot.len() as u64, 0);
+    bin_imp.entry = Some(0x1000);
+    bin_imp.import_slots.push(ImportSlot { addr: 0x2010, name: "custom_imp".into(), library: Some("libc.so".into()), kind: "got" });
+    let out_imp = aarch64_lift(bin_imp, bytes_slot, 0x1000);
+    assert!(!out_imp.contains("x3 ="), "import-slot load must remain elided:\n{out_imp}");
+    assert!(out_imp.contains("custom_imp(9);"), "import-slot call must pass w0:\n{out_imp}");
+}
+
+/// `blraa x1, x2` must not fold the callee register or pointer-authentication modifier into the
+/// argument list.
+#[test]
+fn aarch64_authenticated_call_excludes_the_callee_and_modifier() {
+    let (bin_pac, bytes_pac) = aarch64_pac_and_direct_image();
+    let out_pac = aarch64_lift(bin_pac, bytes_pac, 0x1000);
+    assert!(out_pac.contains("x1 = x19;"), "PAC target assignment must remain visible:\n{out_pac}");
+    assert!(out_pac.contains("x2 = x20;"), "PAC modifier assignment must remain visible:\n{out_pac}");
+    assert!(out_pac.contains("(*x1)(5);"), "blraa x1, x2 must pass only w0:\n{out_pac}");
+}
+
+/// Control: an ordinary direct `bl` still folds its argument registers.
+#[test]
+fn aarch64_direct_call_folds_its_arguments() {
+    let (bin_pac, bytes_pac) = aarch64_pac_and_direct_image();
+    let out_direct = aarch64_lift(bin_pac, bytes_pac, 0x1030);
+    assert!(out_direct.contains("sub_1020(5, 6);"), "direct bl control must still fold w0 and w1:\n{out_direct}");
+}
+
+/// A base register assigned in the block stays the call's argument after an earlier read of it
+/// (here a spill to the frame), and its assignment stays visible.
+#[test]
+fn x64_memory_indirect_call_keeps_a_base_argument_read_before_the_call() {
+    // 0x1000: mov rdi, [rbp - 8] (48 8b 7d f8); mov [rbp - 16], rdi (48 89 7d f0);
+    //         call qword ptr [rdi + 0x10] (ff 57 10); ret (c3)
+    let code = vec![0x48, 0x8b, 0x7d, 0xf8, 0x48, 0x89, 0x7d, 0xf0, 0xff, 0x57, 0x10, 0xc3];
+    let mut bin = Binary::raw(Arch::X86_64, 0x1000, code.len() as u64, 0);
+    bin.entry = Some(0x1000);
+    let img = Image::from_binary(Arc::from(code), bin);
+    let prog = Program::analyze(&img, &Limits::default(), &NoControl).expect("analyze spilled base-indirect call");
+    let out = lift(&img, &prog, prog.functions.get(&0x1000).expect("entry"), &|_| None);
+
+    assert!(out.text.contains("rdi = var_8;"), "base assignment must stay visible:\n{}", out.text);
+    assert!(out.text.contains("(**(uint64_t*)(rdi + 16))(rdi);"), "the spilled base must still be passed:\n{}", out.text);
 }

@@ -85,6 +85,11 @@ fn double_star_crosses_slashes_only_as_a_full_path_segment() {
     stand_alone.add_file("", "**\n!dir/\n!dir/keep.js\n");
     assert!(stand_alone.is_ignored("other.js", false));
     assert!(!stand_alone.is_ignored("dir/keep.js", false));
+
+    let mut escaped_slash = Ignore::default();
+    escaped_slash.add_file("", "a/**\\/b.js\n");
+    assert!(escaped_slash.is_ignored("a/x/y/b.js", false), "a/**\\/b.js must match nested paths across /");
+    assert!(!escaped_slash.is_ignored("a/b.js", false), "escaped slash after ** preserves separate literal slash token");
 }
 
 /// Once an ancestor directory is ignored, all descendants are ignored and `!` child rules cannot re-include them unless the directory itself is unignored.

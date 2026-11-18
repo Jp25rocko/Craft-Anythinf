@@ -1143,6 +1143,9 @@ fn primary_key_column<'a>(term: &[&'a str]) -> Option<(&'a str, Option<&'a str>)
             name => break name,
         }
     };
+    if !name.starts_with(['\'', '"', '`', '[']) && name.starts_with(is_sql_word_break) {
+        return None;
+    }
     let mut collation = None;
     while let Some(token) = tokens.next() {
         match token {
@@ -1277,7 +1280,7 @@ fn column_definitions(sql: &str) -> Vec<(Column, &str)> {
         }
         // A comment in front of a definition (often the previous line's note) isn't part of it.
         let Some(first) = sql_tokens(seg).into_iter().next() else { continue };
-        let seg = seg.get((first.as_ptr() as usize).saturating_sub(seg.as_ptr() as usize)..).unwrap_or("").trim_end();
+        let seg = seg.get((first.as_ptr() as usize).saturating_sub(seg.as_ptr() as usize)..).unwrap_or("").trim_end_matches(is_sql_whitespace);
         // Skip table-level constraints.
         let first_word = first.to_ascii_uppercase();
         if matches!(first_word.as_str(), "CONSTRAINT" | "PRIMARY" | "UNIQUE" | "CHECK" | "FOREIGN") {
@@ -1374,11 +1377,28 @@ fn rowid_alias_index(sql: &str) -> Option<usize> {
     ["INTEGER", "\"INTEGER\"", "'INTEGER'", "`INTEGER`", "[INTEGER]"].iter().any(|integer| spelling.eq_ignore_ascii_case(integer)).then_some(index)
 }
 
+/// True when `c` is one of SQLite's five ASCII whitespace characters (`tokenize.c`); non-ASCII
+/// code points such as U+00A0 and U+3000 remain valid unquoted identifier characters.
+fn is_sql_whitespace(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{c}')
+}
+
+/// `sql` from where its next token starts. SQLite also skips U+FEFF there, though inside a word
+/// it is an identifier character like any other non-ASCII code point.
+fn at_token_start(sql: &str) -> &str {
+    sql.trim_start_matches(|c| is_sql_whitespace(c) || c == '\u{feff}')
+}
+
+/// True when `c` terminates an unquoted SQL identifier or keyword.
+fn is_sql_word_break(c: char) -> bool {
+    is_sql_whitespace(c) || matches!(c, '(' | ')' | ',' | ';' | '+' | '-' | '.' | '\'' | '"' | '`' | '[' | '/')
+}
+
 /// Keep quoted text intact so defaults and constraint names cannot become SQL keywords.
 fn sql_tokens(mut sql: &str) -> Vec<&str> {
     let mut tokens = Vec::new();
     while !sql.is_empty() {
-        sql = sql.trim_start();
+        sql = at_token_start(sql);
         if sql.is_empty() {
             break;
         }
@@ -1407,32 +1427,29 @@ fn sql_tokens(mut sql: &str) -> Vec<&str> {
                     }
                 }
             }
-        } else if !matches!(first, '(' | ')' | ',' | '/') {
-            end = sql.find(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | ',' | '\'' | '"' | '`' | '[' | '/')).unwrap_or(sql.len());
-            // A line comment may follow a word with no space between: `INTEGER--note`.
-            if let Some(dash) = sql.get(..end).and_then(|word| word.find("--")).filter(|&dash| dash > 0) {
-                end = dash;
+        } else if first.is_ascii_digit() || (first == '.' && chars.peek().is_some_and(|(_, c)| c.is_ascii_digit())) {
+            let hex = sql.starts_with("0x") || sql.starts_with("0X");
+            while let Some((i, c)) = chars.next() {
+                if c.is_ascii_alphanumeric() || c == '_' || (!hex && c == '.') {
+                    end = i.saturating_add(c.len_utf8());
+                    if !hex
+                        && matches!(c, 'e' | 'E')
+                        && chars.peek().is_some_and(|&(j, sign)| matches!(sign, '+' | '-') && !sql.get(j..).is_some_and(|s| s.starts_with("--")))
+                        && let Some((j, sign)) = chars.next()
+                    {
+                        end = j.saturating_add(sign.len_utf8());
+                    }
+                } else {
+                    break;
+                }
             }
+        } else if !is_sql_word_break(first) {
+            end = sql.find(is_sql_word_break).unwrap_or(sql.len());
         }
         tokens.push(sql.get(..end).unwrap_or(""));
         sql = sql.get(end..).unwrap_or("");
     }
     tokens
-}
-
-/// `text` with each SQL comment replaced by a space. Quoted text is kept as it is.
-fn strip_comments(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut end = 0usize;
-    for token in sql_tokens(text) {
-        let start = (token.as_ptr() as usize).saturating_sub(text.as_ptr() as usize);
-        // Only whitespace and comments lie between two tokens.
-        let gap = text.get(end..start).unwrap_or("");
-        out.push_str(if gap.contains("--") || gap.contains("/*") { " " } else { gap });
-        out.push_str(token);
-        end = start.saturating_add(token.len());
-    }
-    out
 }
 
 /// Missing trailing fields use literal defaults, read with the column's affinity; expressions
@@ -1522,6 +1539,10 @@ fn literal_value(tokens: &[&str], affinity: Affinity, allow_words: bool) -> Opti
     }
     let number = if matches!(token, "+" | "-") {
         let value = *tokens.get(1)?;
+        // SQLite drops a unary plus before a literal, so `+X'41'` is still the blob.
+        if token == "+" && value.eq_ignore_ascii_case("X") && tokens.get(2).is_some_and(|quoted| quoted.starts_with('\'')) {
+            return literal_value(tokens.get(1..)?, affinity, false);
+        }
         if let Some(text) = single_quoted(value) {
             if token == "+" {
                 return text_default(&text, affinity);
@@ -1577,11 +1598,12 @@ fn single_quoted(token: &str) -> Option<String> {
 }
 
 /// A word SQLite reads as a string constant in a DEFAULT, but not a dynamic date/time keyword.
+/// SQLite's identifiers take any non-ASCII character, and `$` after the first.
 fn is_bare_word(token: &str) -> bool {
     let mut chars = token.chars();
     let Some(first) = chars.next() else { return false };
-    (first.is_ascii_alphabetic() || first == '_')
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    (first.is_ascii_alphabetic() || first == '_' || !first.is_ascii())
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$' || !c.is_ascii())
         && !["CURRENT_TIME", "CURRENT_DATE", "CURRENT_TIMESTAMP"].iter().any(|keyword| token.eq_ignore_ascii_case(keyword))
 }
 
@@ -1822,7 +1844,7 @@ fn split_top_level(s: &str) -> Vec<&str> {
 /// Take the leading column identifier (handling "quoted", `back-ticked`, 'single-quoted' and
 /// [bracketed] names).
 fn take_identifier(seg: &str) -> (String, &str) {
-    let seg = seg.trim_start();
+    let seg = at_token_start(seg);
     let mut chars = seg.char_indices().peekable();
     match chars.next() {
         Some((_, q @ ('"' | '`' | '\''))) => {
@@ -1846,47 +1868,31 @@ fn take_identifier(seg: &str) -> (String, &str) {
             (seg.get(1..).unwrap_or("").to_string(), "")
         }
         Some(_) => {
-            let endp = seg.find([' ', '\t', '\n', '\r', '\u{c}', '(', ',']).unwrap_or(seg.len());
-            // A comment may follow the name with no space between: `id/*key*/` or `id--key`.
-            let endp = ["--", "/*"].into_iter().filter_map(|mark| seg.get(..endp)?.find(mark)).fold(endp, usize::min);
+            let endp = seg.find(is_sql_word_break).unwrap_or(seg.len());
             (seg.get(..endp).unwrap_or("").to_string(), seg.get(endp..).unwrap_or(""))
         }
         None => (String::new(), ""),
     }
 }
 
-/// The type name is the run of tokens before the first column-constraint keyword. A comma inside
-/// the type's parentheses belongs to it (`DECIMAL(10, 2)`); only the column separator is dropped.
+/// Extract the column's declared type as SQLite's schema inspection reports it: unquoted spans
+/// keep their raw token slice before the first column constraint, bracketed spans dequote across
+/// the full span unless an inner quotation mark is present, and other quoted spans stop at their
+/// closing delimiter.
 fn extract_type(rest: &str) -> String {
-    let cleaned = strip_comments(rest);
-    let trimmed = cleaned.trim_start();
-    if trimmed.starts_with('[') {
+    let spelling = declared_type_spelling(rest);
+    if spelling.starts_with('[') {
         // SQLite dequotes the full span only when its interior contains no quotation marks.
-        let spelling = declared_type_spelling(rest);
         let inner = spelling.as_bytes().get(1..spelling.len().saturating_sub(1)).unwrap_or(&[]);
         if inner.iter().any(|&byte| matches!(byte, b'\'' | b'"' | b'`' | b'[')) {
-            return take_identifier(trimmed).0;
+            return take_identifier(spelling).0;
         }
         return String::from_utf8_lossy(inner).into_owned();
     }
-    if trimmed.starts_with(['"', '`', '\'']) {
-        return take_identifier(trimmed).0;
+    if spelling.starts_with(['"', '`', '\'']) {
+        return take_identifier(spelling).0;
     }
-    let mut out = String::new();
-    let mut depth = 0i32;
-    for tok in trimmed.split_whitespace() {
-        let bare = tok.trim_end_matches(',');
-        if depth == 0 && (starts_column_constraint(bare) || bare.eq_ignore_ascii_case("GENERATED") || bare.eq_ignore_ascii_case("AUTOINCREMENT")) {
-            break;
-        }
-        depth += tok.matches('(').count() as i32;
-        depth -= tok.matches(')').count() as i32;
-        if !out.is_empty() {
-            out.push(' ');
-        }
-        out.push_str(if depth == 0 { bare } else { tok });
-    }
-    out
+    spelling.to_owned()
 }
 
 /// Slice the whole type declaration, including precision and additional type words.

@@ -1042,11 +1042,14 @@ fn decode_a32(mode: Mode, bytes: &[u8], addr: u64, fmt: bool) -> Option<Insn> {
     let mut mem_slot = None;
     let is_literal_load = matches!(inst.opcode, Opcode::LDR | Opcode::LDRB | Opcode::LDRH | Opcode::LDRSB | Opcode::LDRSH | Opcode::LDRD);
     let size = if matches!(inst.opcode, Opcode::LDR | Opcode::STR) { 4 } else { 0 };
+    // A32 permits (deprecated) non-writeback stores with PC as the base; T32 does not.
+    let is_a32_pc_store = mode == Mode::A32 && matches!(inst.opcode, Opcode::STR | Opcode::STRB | Opcode::STRH | Opcode::STRD);
     let mut mem = |base: u8, index: Option<u8>, disp: i64, literal: bool| {
-        // Only genuine literal-load opcodes with a non-writeback immediate offset from PC read
-        // from the word-aligned PC (excluding hints like `pld`/`nop.w` and invalid PC stores).
-        let pc = (literal && is_literal_load && base == 15).then(|| (addr.wrapping_add(pc_bias) & !3).wrapping_add(disp as u64));
-        if let Some(a) = pc {
+        // A non-writeback immediate offset from PC names a fixed address, measured from the
+        // word-aligned PC, for literal loads and A32 stores (not hints like `pld`/`nop.w`, nor
+        // T32 stores). Only literal loads read a literal, so only they are references and slots.
+        let pc = (literal && base == 15 && (is_literal_load || is_a32_pc_store)).then(|| (addr.wrapping_add(pc_bias) & !3).wrapping_add(disp as u64));
+        if let Some(a) = pc.filter(|_| is_literal_load) {
             refs.push(a);
             mem_slot = Some(a);
         }
@@ -1187,9 +1190,12 @@ fn decode_a32(mode: Mode, bytes: &[u8], addr: u64, fmt: bool) -> Option<Insn> {
         push_unique(&mut reads, "r13".into());
         push_unique(&mut writes, "r13".into());
     }
+    // Every plain store reads its first register (the value), though only `STR` lifts as a store.
+    // (`STREX` is not one: its first register is the status it writes.)
+    let stores_first = matches!(inst.opcode, Opcode::STRB | Opcode::STRH | Opcode::STRD | Opcode::STRT | Opcode::STRBT | Opcode::STRHT);
     for (i, r) in reg_ops.iter().enumerate() {
         let n = format!("r{r}");
-        if i == 0 && !matches!(kind, Kind::Store | Kind::Cmp | Kind::Test | Kind::Push | Kind::Branch | Kind::Call) {
+        if i == 0 && !stores_first && !matches!(kind, Kind::Store | Kind::Cmp | Kind::Test | Kind::Push | Kind::Branch | Kind::Call) {
             push_unique(&mut writes, n);
         } else {
             push_unique(&mut reads, n);
