@@ -304,27 +304,49 @@ impl Drop for Stdio {
 struct Http {
     name: String,
     url: String,
+    https: bool,
     headers: BTreeMap<String, String>,
     session: Option<String>,
     initialized: bool,
+    #[cfg(test)]
+    tls: Option<ureq::tls::TlsConfig>,
 }
 
 impl Http {
     fn new(name: &str, u: &ServerUrl) -> Result<Http, ToolError> {
-        if !url_allowed(&u.url) {
+        let url = u.url.trim();
+        if !url_allowed(url) {
             return Err(ToolError::invalid(format!("The {name} plugin's url must start with https:// (or http:// to this computer).")));
         }
-        Ok(Http { name: name.to_string(), url: u.url.clone(), headers: u.headers.clone(), session: None, initialized: false })
+        let https = url.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("https:"));
+        Ok(Http {
+            name: name.to_string(),
+            url: url.to_string(),
+            https,
+            headers: u.headers.clone(),
+            session: None,
+            initialized: false,
+            #[cfg(test)]
+            tls: None,
+        })
     }
 
     fn post(&mut self, msg: &Value, timeout: Duration) -> Result<ureq::http::Response<ureq::Body>, ToolError> {
-        let agent = ureq::Agent::config_builder()
+        let mut builder = ureq::Agent::config_builder()
+            .https_only(self.https)
             .http_status_as_error(false)
             .user_agent("CraftAnything")
             .timeout_connect(Some(Duration::from_secs(20)))
-            .timeout_global(Some(timeout.max(Duration::from_secs(1))))
-            .build()
-            .new_agent();
+            .timeout_global(Some(timeout.max(Duration::from_secs(1))));
+        if !self.https {
+            // Plain HTTP is allowed only to loopback; never follow a redirect off this computer.
+            builder = builder.max_redirects(0);
+        }
+        #[cfg(test)]
+        if let Some(tls) = &self.tls {
+            builder = builder.proxy(None).tls_config(tls.clone());
+        }
+        let agent = builder.build().new_agent();
         let mut req = agent.post(&self.url).header("Content-Type", "application/json").header("Accept", "application/json, text/event-stream");
         if self.initialized {
             req = req.header("MCP-Protocol-Version", PROTOCOL);
@@ -336,6 +358,11 @@ impl Http {
             req = req.header(k, v);
         }
         let resp = req.send(msg.to_string()).map_err(|e| {
+            if matches!(e, ureq::Error::RequireHttpsOnly(_)) {
+                // This error carries the redirect URI, which can contain tokens or signed parameters.
+                return ToolError::new(ErrorCode::EngineMissing, format!("The {} plugin redirected to plain HTTP and was refused.", self.name))
+                    .with_remediation("Keep every redirect for a remote MCP plugin on HTTPS.");
+            }
             let code = if matches!(e, ureq::Error::Timeout(_)) { ErrorCode::TimedOut } else { ErrorCode::EngineMissing };
             ToolError::new(code, format!("Couldn't reach the {} plugin: {e}", self.name))
                 .with_remediation("Check its url in config.toml ([[plugins.mcp]]) and your connection.")
@@ -417,19 +444,31 @@ impl Transport for Http {
 
 /// `https://`, or `http://` to this computer only (keys must not cross the network in the clear).
 pub fn url_allowed(url: &str) -> bool {
-    let lower = url.trim().to_ascii_lowercase();
-    if lower.starts_with("https://") {
-        return lower.len() > "https://".len();
+    let trimmed = url.trim();
+    let Ok(uri) = trimmed.parse::<ureq::http::Uri>() else { return false };
+    let Some(scheme) = uri.scheme_str() else { return false };
+    let Some(authority) = uri.authority() else { return false };
+    let auth = authority.as_str();
+    if auth.contains('@') {
+        return false;
     }
-    let Some(rest) = lower.strip_prefix("http://") else { return false };
-    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
-    let host = if host.starts_with('[') {
-        host.split(']').next().map(|h| format!("{h}]")).unwrap_or_default()
+    if scheme.eq_ignore_ascii_case("https") {
+        if let Some(after) = auth.strip_prefix('[') {
+            after.split_once(']').is_some_and(|(ip, tail)| {
+                ip.parse::<std::net::Ipv6Addr>().is_ok() && (tail.is_empty() || tail.strip_prefix(':').is_some_and(|p| p.parse::<u16>().is_ok()))
+            })
+        } else {
+            let (host, port) = match auth.split_once(':') {
+                Some((h, p)) => (h, Some(p)),
+                None => (auth, None),
+            };
+            !host.is_empty() && port.is_none_or(|p| p.parse::<u16>().is_ok())
+        }
+    } else if scheme.eq_ignore_ascii_case("http") {
+        craft_anything_platform::standin_server::host_is_loopback(auth, None)
     } else {
-        host.split(':').next().unwrap_or_default().to_string()
-    };
-    matches!(host.as_str(), "localhost" | "127.0.0.1" | "[::1]")
+        false
+    }
 }
 
 /// The text parts of a tool result (`content: [{type: "text", text}]`), joined.
@@ -557,5 +596,221 @@ mod tests {
                 .err()
                 .unwrap();
         assert!(err.message.contains("https://"));
+    }
+
+    /// Malformed or ambiguous authorities must not slip past `url_allowed`, while uppercase
+    /// schemes, valid ports, and surrounding whitespace remain accepted.
+    #[test]
+    fn url_allowed_rejects_authority_confusion_and_empty_hosts() {
+        for good in [
+            "HTTPS://MCP.EXAMPLE.COM:8443/mcp?v=1",
+            "  https://mcp.example.com  ",
+            "https://[::1]/mcp",
+            "https://[::1]:8443/mcp",
+            "HTTP://LOCALHOST:8080/mcp",
+            "http://127.0.0.1",
+            "http://127.0.0.1:0/mcp",
+            "http://[::1]:9000/mcp",
+        ] {
+            assert!(url_allowed(good), "expected allowed: {good:?}");
+        }
+        for bad in [
+            "http://[::1].evil.example.com/mcp",
+            "http://[::1/mcp",
+            "http://[::1]:bad/mcp",
+            "http://[::1]:80:90/mcp",
+            r"http://evil.example.com\@127.0.0.1/mcp",
+            "http://user@127.0.0.1/mcp",
+            "http://localhost:80:evil/mcp",
+            "http://127.0.0.1:notaport/mcp",
+            "http://127.0.0.1:/mcp",
+            "http:///mcp",
+            "https:///mcp",
+            "https://?q=1",
+            "https://#frag",
+            "https://user@mcp.example.com/mcp",
+            "https://:443/mcp",
+            "https://mcp.example.com:/mcp",
+            "https://mcp.example.com:notaport/mcp",
+            "https://mcp.example.com:99999/mcp",
+            "https://[not-ip]/mcp",
+            "https://[::1].evil.example.com/mcp",
+            "https://[::1]:bad/mcp",
+            "https://[::1/mcp",
+            r"https://mcp.example.com\evil/mcp",
+            "https://mcp example.com/mcp",
+            "/relative/mcp",
+        ] {
+            assert!(!url_allowed(bad), "expected rejected: {bad:?}");
+        }
+    }
+
+    /// Surrounding whitespace accepted by `url_allowed` is trimmed before opening the HTTP client.
+    #[test]
+    fn trimmed_loopback_url_connects() {
+        let (url, server) = http_server();
+        let headers = BTreeMap::from([("Authorization".to_string(), "Bearer t".to_string())]);
+        let mut c = McpClient::connect("remote", &Server::Url(ServerUrl { url: format!("  {url}\n"), headers }), Duration::from_secs(10)).unwrap();
+        assert_eq!(c.list_tools(Duration::from_secs(10)).unwrap().len(), 1);
+        let _ = c.call_tool("echo", json!({}), Duration::from_secs(10), &|| false).unwrap();
+        let _ = server.join().unwrap();
+    }
+
+    /// A loopback HTTP server cannot redirect a request (with its headers and body) to a second
+    /// HTTP endpoint.
+    #[test]
+    fn loopback_http_refuses_redirects_without_following() {
+        use std::io::Read;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let target_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        target_listener.set_nonblocking(true).unwrap();
+        let target_port = target_listener.local_addr().unwrap().port();
+        let target_seen = Arc::new(AtomicUsize::new(0));
+        let seen_clone = target_seen.clone();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop_clone = stop.clone();
+        let target_worker = std::thread::spawn(move || {
+            while !stop_clone.load(Ordering::SeqCst) {
+                if let Ok((mut s, _)) = target_listener.accept() {
+                    s.set_nonblocking(false).unwrap();
+                    let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
+                    let mut buf = [0u8; 2048];
+                    let _ = s.read(&mut buf);
+                    seen_clone.fetch_add(1, Ordering::SeqCst);
+                    let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+                } else {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+        });
+
+        let redirect_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        redirect_listener.set_nonblocking(true).unwrap();
+        let redirect_url = format!("http://{}/mcp", redirect_listener.local_addr().unwrap());
+        let stop_redirect = stop.clone();
+        let redirect_worker = std::thread::spawn(move || {
+            while !stop_redirect.load(Ordering::SeqCst) {
+                if let Ok((mut s, _)) = redirect_listener.accept() {
+                    s.set_nonblocking(false).unwrap();
+                    let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
+                    let mut buf = [0u8; 2048];
+                    let _ = s.read(&mut buf);
+                    let reply =
+                        format!("HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{target_port}/steal\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    let _ = s.write_all(reply.as_bytes());
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+
+        let secret_headers = BTreeMap::from([("X-Api-Key".to_string(), "sk-test".to_string())]);
+        let err = McpClient::connect("demo", &Server::Url(ServerUrl { url: redirect_url, headers: secret_headers }), Duration::from_secs(5)).err().unwrap();
+        stop.store(true, Ordering::SeqCst);
+        redirect_worker.join().unwrap();
+        target_worker.join().unwrap();
+
+        assert_eq!(target_seen.load(Ordering::SeqCst), 0, "loopback HTTP redirect must not be followed");
+        assert!(err.message.contains("302"), "{err:?}");
+    }
+
+    /// An HTTPS MCP plugin (including uppercase `HTTPS://`) refuses a redirect to plain HTTP
+    /// before opening the HTTP connection and omits the redirect target URI from the error.
+    #[test]
+    fn https_downgrade_redirect_is_refused_without_contacting_http() {
+        use std::io::Read;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        const PRIVATE_SIG: &str = "signed-mcp-query-must-stay-private";
+
+        let key = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let cert = key.cert.der().clone();
+        let private = rustls::pki_types::PrivatePkcs8KeyDer::from(key.signing_key.serialize_der());
+        let server_cfg = Arc::new(
+            rustls::ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_no_client_auth()
+                .with_single_cert(vec![cert.clone()], private.into())
+                .unwrap(),
+        );
+        let client_tls = ureq::tls::TlsConfig::builder()
+            .root_certs(ureq::tls::RootCerts::new_with_certs(&[ureq::tls::Certificate::from_der(cert.as_ref()).to_owned()]))
+            .build();
+
+        let http_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        http_listener.set_nonblocking(true).unwrap();
+        let http_port = http_listener.local_addr().unwrap().port();
+        let http_seen = Arc::new(AtomicUsize::new(0));
+        let http_seen_clone = http_seen.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_http = stop.clone();
+        let http_worker = std::thread::spawn(move || {
+            while !stop_http.load(Ordering::SeqCst) {
+                if let Ok((mut s, _)) = http_listener.accept() {
+                    let mut buf = [0u8; 1024];
+                    let _ = s.read(&mut buf);
+                    http_seen_clone.fetch_add(1, Ordering::SeqCst);
+                    let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+                } else {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+        });
+
+        let https_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        https_listener.set_nonblocking(true).unwrap();
+        let https_port = https_listener.local_addr().unwrap().port();
+        let https_seen = Arc::new(AtomicUsize::new(0));
+        let https_seen_clone = https_seen.clone();
+        let stop_https = stop.clone();
+        let https_worker = std::thread::spawn(move || {
+            while !stop_https.load(Ordering::SeqCst) {
+                if let Ok((socket, _)) = https_listener.accept() {
+                    socket.set_nonblocking(false).unwrap();
+                    let _ = socket.set_read_timeout(Some(Duration::from_secs(3)));
+                    let _ = socket.set_write_timeout(Some(Duration::from_secs(3)));
+                    let conn = rustls::ServerConnection::new(server_cfg.clone()).unwrap();
+                    let mut tls_stream = rustls::StreamOwned::new(conn, socket);
+                    let mut header = Vec::new();
+                    let mut b = [0u8; 1];
+                    while header.len() < 8192 && !header.ends_with(b"\r\n\r\n") {
+                        if matches!(tls_stream.read(&mut b), Ok(1)) {
+                            header.push(b[0]);
+                        } else {
+                            break;
+                        }
+                    }
+                    https_seen_clone.fetch_add(1, Ordering::SeqCst);
+                    let reply = format!(
+                        "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{http_port}/mcp?sig={PRIVATE_SIG}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    );
+                    let _ = tls_stream.write_all(reply.as_bytes());
+                    let _ = tls_stream.flush();
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+
+        let mut transport = Http::new(
+            "secure",
+            &ServerUrl { url: format!("HTTPS://localhost:{https_port}/mcp"), headers: BTreeMap::from([("X-Api-Key".to_string(), "sk-test".to_string())]) },
+        )
+        .unwrap();
+        transport.tls = Some(client_tls);
+        let err = McpClient::with_transport("secure", Box::new(transport), Duration::from_secs(5)).err().unwrap();
+
+        stop.store(true, Ordering::SeqCst);
+        https_worker.join().unwrap();
+        http_worker.join().unwrap();
+
+        assert_eq!(https_seen.load(Ordering::SeqCst), 1);
+        assert_eq!(http_seen.load(Ordering::SeqCst), 0, "downgrade redirect must never contact plain HTTP");
+        assert!(err.message.contains("plain HTTP"), "{err:?}");
+        assert!(!format!("{err:?}").contains(PRIVATE_SIG), "redirect target query leaked: {err:?}");
     }
 }
