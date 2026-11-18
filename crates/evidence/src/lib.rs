@@ -309,7 +309,7 @@ pub fn result_lists(result: &Value) -> std::collections::BTreeMap<String, usize>
     fn holding_lists<'a>(v: &'a Value, depth: usize, names: &mut std::collections::HashSet<&'a str>) {
         #[cfg(test)]
         if depth == 0 {
-            tests::LOOKUP_WALKS.update(|(_, reached)| (true, reached));
+            tests::LOOKUP_WALKS.set((true, tests::LOOKUP_WALKS.get().1));
         }
         let Value::Object(m) = v else { return };
         if depth > RESULT_KEY_DEPTH {
@@ -327,7 +327,7 @@ pub fn result_lists(result: &Value) -> std::collections::BTreeMap<String, usize>
     fn reach<'a>(v: &'a Value, depth: usize, names: &std::collections::HashSet<&'a str>, found: &mut std::collections::HashMap<&'a str, &'a Value>) {
         #[cfg(test)]
         if depth == 0 {
-            tests::LOOKUP_WALKS.update(|(collected, _)| (collected, true));
+            tests::LOOKUP_WALKS.set((tests::LOOKUP_WALKS.get().0, true));
         }
         let Value::Object(m) = v else { return };
         if depth > RESULT_KEY_DEPTH {
