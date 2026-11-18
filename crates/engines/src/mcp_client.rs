@@ -334,17 +334,20 @@ impl Http {
         })
     }
 
-    fn post(&mut self, msg: &Value, timeout: Duration) -> Result<ureq::http::Response<ureq::Body>, ToolError> {
+    /// POSTs `msg`, giving up after `timeout` across every redirect hop and before resending once
+    /// `cancelled` says so.
+    fn post(&mut self, msg: &Value, timeout: Duration, cancelled: &dyn Fn() -> bool) -> Result<ureq::http::Response<ureq::Body>, ToolError> {
+        let deadline = Instant::now() + timeout.max(Duration::from_secs(1));
         let mut builder = ureq::Agent::config_builder()
             .https_only(self.https)
             .http_status_as_error(false)
             .user_agent("CraftAnything")
-            .timeout_connect(Some(Duration::from_secs(20)))
-            .timeout_global(Some(timeout.max(Duration::from_secs(1))));
+            .timeout_connect(Some(Duration::from_secs(20)));
         if !self.https {
-            // Plain HTTP is allowed only to loopback. Redirects are followed by hand below, so one
-            // that leaves this computer is refused before the headers and body are sent again.
-            builder = builder.max_redirects(0);
+            // Plain HTTP is allowed only to loopback, so no proxy may carry it off this computer.
+            // Redirects are followed by hand below, so one that leaves this computer is refused
+            // before the headers and body are sent again.
+            builder = builder.max_redirects(0).proxy(None);
         }
         #[cfg(test)]
         if let Some(tls) = &self.tls {
@@ -352,18 +355,35 @@ impl Http {
         }
         let agent = builder.build().new_agent();
         let body = msg.to_string();
+        let home = origin(&self.url);
         let mut url = self.url.clone();
         let mut hops = 0;
         let resp = loop {
-            let mut req = agent.post(&url).header("Content-Type", "application/json").header("Accept", "application/json, text/event-stream");
+            if hops > 0 && cancelled() {
+                return Err(ToolError::cancelled());
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(ToolError::new(ErrorCode::TimedOut, "no answer in time"));
+            }
+            let mut req = agent
+                .post(&url)
+                .config()
+                .timeout_global(Some(left))
+                .build()
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json, text/event-stream");
             if self.initialized {
                 req = req.header("MCP-Protocol-Version", PROTOCOL);
             }
-            if let Some(s) = &self.session {
-                req = req.header("Mcp-Session-Id", s);
-            }
-            for (k, v) in &self.headers {
-                req = req.header(k, v);
+            // The configured headers and the session belong to the configured server only.
+            if origin(&url) == home {
+                if let Some(s) = &self.session {
+                    req = req.header("Mcp-Session-Id", s);
+                }
+                for (k, v) in &self.headers {
+                    req = req.header(k, v);
+                }
             }
             let resp = req.send(body.as_str()).map_err(|e| {
                 if matches!(e, ureq::Error::RequireHttpsOnly(_)) {
@@ -401,7 +421,9 @@ impl Http {
             hops += 1;
             url = next;
         };
-        if let Some(s) = resp.headers().get("mcp-session-id").and_then(|v| v.to_str().ok()) {
+        if origin(&url) == home
+            && let Some(s) = resp.headers().get("mcp-session-id").and_then(|v| v.to_str().ok())
+        {
             self.session = Some(s.to_string());
         }
         let status = resp.status().as_u16();
@@ -419,7 +441,7 @@ impl Http {
 
 impl Transport for Http {
     fn notify(&mut self, msg: &Value) -> Result<(), ToolError> {
-        self.post(msg, Duration::from_secs(30))?;
+        self.post(msg, Duration::from_secs(30), &|| false)?;
         if msg.get("method").and_then(Value::as_str) == Some("notifications/initialized") {
             self.initialized = true;
         }
@@ -434,7 +456,7 @@ impl Transport for Http {
         if left.is_zero() {
             return Err(ToolError::new(ErrorCode::TimedOut, "no answer in time"));
         }
-        let resp = self.post(msg, left)?;
+        let resp = self.post(msg, left, cancelled)?;
         let event_stream = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).is_some_and(|t| t.starts_with("text/event-stream"));
         let unreadable =
             |e: &dyn std::fmt::Display| ToolError::new(ErrorCode::GarbledOutput, format!("The {} plugin's answer couldn't be read: {e}", self.name));
@@ -480,7 +502,8 @@ impl Transport for Http {
 const MAX_REDIRECTS: usize = 5;
 
 /// Resolves a `Location` header against the URL that answered it: absolute, scheme-relative,
-/// absolute-path, query-only, or path-relative.
+/// absolute-path, query-only, or path-relative, with `.` and `..` segments removed (RFC 3986
+/// section 5.2.4).
 fn resolve_location(base: &str, location: &str) -> Option<String> {
     let loc = location.trim();
     if loc.is_empty() {
@@ -490,23 +513,59 @@ fn resolve_location(base: &str, location: &str) -> Option<String> {
         scheme.as_bytes().first().is_some_and(u8::is_ascii_alphabetic) && scheme.bytes().all(|b| b.is_ascii_alphanumeric() || b"+-.".contains(&b))
     });
     if absolute {
-        return Some(loc.to_string());
+        return Some(without_dot_segments(loc));
     }
     let uri = base.parse::<ureq::http::Uri>().ok()?;
     let scheme = uri.scheme_str()?;
     if loc.starts_with("//") {
-        return Some(format!("{scheme}:{loc}"));
+        return Some(without_dot_segments(&format!("{scheme}:{loc}")));
     }
     let origin = format!("{scheme}://{}", uri.authority()?.as_str());
     let path = uri.path();
-    if loc.starts_with('/') {
-        Some(format!("{origin}{loc}"))
+    let joined = if loc.starts_with('/') {
+        format!("{origin}{loc}")
     } else if loc.starts_with('?') {
-        Some(format!("{origin}{path}{loc}"))
+        format!("{origin}{path}{loc}")
     } else {
         let dir = path.rfind('/').map_or("/", |i| &path[..=i]);
-        Some(format!("{origin}{dir}{loc}"))
+        format!("{origin}{dir}{loc}")
+    };
+    Some(without_dot_segments(&joined))
+}
+
+/// `url` with `.` and `..` removed from its path. Anything without `scheme://` is left as it is.
+fn without_dot_segments(url: &str) -> String {
+    let Some(after) = url.find("://").map(|i| i + 3) else { return url.to_string() };
+    let path_start = url[after..].find(['/', '?', '#']).map_or(url.len(), |i| after + i);
+    let path_end = url[path_start..].find(['?', '#']).map_or(url.len(), |i| path_start + i);
+    let path = &url[path_start..path_end];
+    if path.is_empty() {
+        return url.to_string();
     }
+    let segments: Vec<&str> = path.split('/').skip(1).collect();
+    let mut out: Vec<&str> = Vec::new();
+    for (i, s) in segments.iter().enumerate() {
+        let last = i + 1 == segments.len();
+        match *s {
+            "." | ".." => {
+                if *s == ".." {
+                    out.pop();
+                }
+                if last {
+                    out.push("");
+                }
+            }
+            s => out.push(s),
+        }
+    }
+    format!("{}/{}{}", &url[..path_start], out.join("/"), &url[path_end..])
+}
+
+/// `scheme://authority` of `url`, lowercased, so redirect targets can be compared with the
+/// configured server.
+fn origin(url: &str) -> Option<String> {
+    let uri = url.trim().parse::<ureq::http::Uri>().ok()?;
+    Some(format!("{}://{}", uri.scheme_str()?, uri.authority()?.as_str()).to_ascii_lowercase())
 }
 
 /// `https://`, or `http://` to this computer only (keys must not cross the network in the clear).
@@ -609,12 +668,26 @@ mod tests {
         let url = format!("http://{}/mcp", listener.local_addr().unwrap());
         let handle = std::thread::spawn(move || {
             let mut seen = Vec::new();
-            for _ in 0..accepts {
-                let (mut s, _) = listener.accept().unwrap();
+            // A request that never comes ends the trace instead of hanging the test.
+            listener.set_nonblocking(true).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            'conns: for _ in 0..accepts {
+                let mut s = loop {
+                    match listener.accept() {
+                        Ok((s, _)) => break s,
+                        Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
+                        Err(_) => break 'conns,
+                    }
+                };
+                s.set_nonblocking(false).unwrap();
+                s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
                 let mut buf = Vec::new();
                 let mut chunk = [0u8; 4096];
                 let (head, body) = loop {
-                    let n = s.read(&mut chunk).unwrap();
+                    let n = match s.read(&mut chunk) {
+                        Ok(n) if n > 0 => n,
+                        _ => break 'conns,
+                    };
                     buf.extend_from_slice(&chunk[..n]);
                     let text = String::from_utf8_lossy(&buf).to_string();
                     if let Some((h, b)) = text.split_once("\r\n\r\n") {
@@ -824,9 +897,85 @@ mod tests {
         assert!(!format!("{err:?}").contains("192.0.2.1") && !format!("{err:?}").contains("private"), "redirect target leaked: {err:?}");
     }
 
+    /// A loopback server that answers each POST, after `delay`, with a 307 to `location`, and
+    /// returns how many requests it saw (at most `accepts`).
+    fn redirect_server(location: String, delay: Duration, accepts: usize) -> (String, std::thread::JoinHandle<usize>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            listener.set_nonblocking(true).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut seen = 0;
+            while seen < accepts && Instant::now() < deadline {
+                let Ok((mut s, _)) = listener.accept() else {
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                };
+                s.set_nonblocking(false).unwrap();
+                let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
+                drain_http_request(&mut s);
+                seen += 1;
+                std::thread::sleep(delay);
+                let reply = format!("HTTP/1.1 307 Temporary Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                let _ = s.write_all(reply.as_bytes());
+            }
+            seen
+        });
+        (url, handle)
+    }
+
+    fn http_to(url: &str) -> Http {
+        let headers = BTreeMap::from([("Authorization".to_string(), "Bearer t".to_string())]);
+        Http::new("local", &ServerUrl { url: url.to_string(), headers }).unwrap()
+    }
+
+    /// A redirect to another port on this computer is followed, but the configured headers and
+    /// session stay with the configured server.
+    #[test]
+    fn loopback_redirect_to_another_origin_drops_configured_headers() {
+        let (target, server) = http_server_with(1, false);
+        let (url, redirector) = redirect_server(target, Duration::ZERO, 1);
+        let mut http = http_to(&url);
+        http.session = Some("s-1".into());
+        let init = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}});
+        http.post(&init, Duration::from_secs(10), &|| false).unwrap();
+        assert_eq!(redirector.join().unwrap(), 1);
+        assert_eq!(server.join().unwrap(), ["initialize session=false auth=false"]);
+    }
+
+    /// Cancelling while the first server is answering stops the message from being sent again.
+    #[test]
+    fn a_cancelled_message_is_not_resent_after_a_redirect() {
+        let target = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let (url, redirector) = redirect_server(format!("http://{}/mcp", target.local_addr().unwrap()), Duration::ZERO, 1);
+        let msg = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {}});
+        let err = http_to(&url).post(&msg, Duration::from_secs(10), &|| true).err().unwrap();
+        assert_eq!(err.code, ErrorCode::Cancelled, "{err:?}");
+        assert_eq!(redirector.join().unwrap(), 1);
+        target.set_nonblocking(true).unwrap();
+        assert!(target.accept().is_err(), "the redirect target must not be contacted after cancelling");
+    }
+
+    /// One timeout covers every hop: a slow redirect chain fails in time instead of restarting
+    /// the clock at each hop.
+    #[test]
+    fn one_timeout_covers_every_redirect_hop() {
+        let (url, redirector) = redirect_server("/mcp/".into(), Duration::from_millis(600), 2);
+        let msg = json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}});
+        let started = Instant::now();
+        let err = http_to(&url).post(&msg, Duration::from_secs(1), &|| false).err().unwrap();
+        assert_eq!(err.code, ErrorCode::TimedOut, "{err:?}");
+        assert!(started.elapsed() < Duration::from_millis(1500), "took {:?}", started.elapsed());
+        assert_eq!(redirector.join().unwrap(), 2);
+    }
+
     #[test]
     fn redirect_locations_resolve_against_the_answering_url() {
         let base = "http://127.0.0.1:8080/api/mcp?x=1";
+        assert_eq!(resolve_location(base, "../mcp/").as_deref(), Some("http://127.0.0.1:8080/mcp/"));
+        assert_eq!(resolve_location(base, "./v2/../mcp?next=a/../b").as_deref(), Some("http://127.0.0.1:8080/api/mcp?next=a/../b"));
+        assert_eq!(resolve_location(base, "http://127.0.0.1:9000/a/./b/../c").as_deref(), Some("http://127.0.0.1:9000/a/c"));
+        assert_eq!(resolve_location(base, "/..").as_deref(), Some("http://127.0.0.1:8080/"));
         assert_eq!(resolve_location(base, "/mcp/").as_deref(), Some("http://127.0.0.1:8080/mcp/"));
         assert_eq!(resolve_location(base, "mcp/").as_deref(), Some("http://127.0.0.1:8080/api/mcp/"));
         assert_eq!(resolve_location(base, "?y=2").as_deref(), Some("http://127.0.0.1:8080/api/mcp?y=2"));
