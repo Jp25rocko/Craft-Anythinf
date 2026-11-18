@@ -1337,8 +1337,11 @@ Owner: open · Status: in progress
       — claimed: Plastic-time, branch bugfix/r2.2-windows-home-is-the-user-profile
 - [ ] CI runs the tests on Ubuntu only, so `cfg(windows)` tests (search paths, consoles, Job
       Objects) are checked only on contributors' machines: run them on a Windows runner too
-- [ ] "Claude Code on <ssh host>" is offered for any SSH host, whether or not it has Claude Code
-      (#62)
+- [x] "Claude Code on <ssh host>" is offered for any SSH host, whether or not it has Claude Code
+      (#62). Done: the suggestions stay, but adding one (UI, CLI or first run) runs
+      `ssh <host> -- <program> --version` with a 15-second deadline and saves nothing when the
+      host doesn't have it, naming the exact check command; an agent on this computer is not
+      checked
       — claimed: AlexJoaquimPereira, branch bugfix/r2.2-ssh-agent-check
 - [ ] Gemini CLI's sign-in reportedly refuses individuals now (#400): check, and stop recommending
       it in the builder setup dialog if so

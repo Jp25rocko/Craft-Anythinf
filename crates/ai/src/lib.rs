@@ -51,6 +51,9 @@ pub const SERVER_CONNECT_WAIT: Duration = Duration::from_secs(15);
 /// How long adding a server by its address waits for its models once it's reached: one still
 /// starting, or loading a model before it answers, took longer than the 10 seconds it had (#1429).
 pub const SERVER_ANSWER_WAIT: Duration = Duration::from_secs(60);
+/// How long an SSH host has to say whether it has an agent's program: ssh's own connect timeout
+/// is 10 seconds, and this is the wall clock for the whole check.
+const SSH_AGENT_CHECK_WAIT: Duration = Duration::from_secs(15);
 
 /// The chat models a server listed when [`AiHub::add_server`] refused to guess between them
 /// (#1434): empty for any other error.
@@ -61,6 +64,38 @@ pub fn models_to_choose(e: &ToolError) -> Vec<String> {
         .and_then(serde_json::Value::as_array)
         .map(|a| a.iter().filter_map(serde_json::Value::as_str).map(str::to_string).collect())
         .unwrap_or_default()
+}
+
+/// Check that `program` is installed on `host` before an agent for it is saved. A host from
+/// `~/.ssh/config` is only a suggestion (#62).
+fn verify_remote_agent(host: &str, program: &str) -> Result<(), ToolError> {
+    let ask = [program.to_string(), "--version".to_string()];
+    let process = craft_anything_platform::process::Process::new("ssh")
+        .args(crate::ssh::ssh_args(host, &ask))
+        .timeout(SSH_AGENT_CHECK_WAIT)
+        .stdout_cap(64 * 1024)
+        .stderr_cap(64 * 1024);
+    remote_check_outcome(host, program, process.run())
+}
+
+/// Turn the remote check's run into the error a person can act on.
+fn remote_check_outcome(host: &str, program: &str, out: Result<craft_anything_platform::Output, ToolError>) -> Result<(), ToolError> {
+    let check = crate::ssh::check_command(host, program);
+    match out {
+        Ok(o) if o.code == Some(0) => Ok(()),
+        // ssh's own exit for a connection that didn't happen: "not installed" would be a guess.
+        Ok(o) if o.code == Some(255) => Err(ToolError::new(ErrorCode::EngineMissing, format!("Couldn't reach {host} to check for {program}."))
+            .with_remediation(format!("Check that this computer can ssh to {host}, then run `{check}`. Pick another host, or add an AI from this computer."))),
+        Ok(_) => Err(ToolError::new(ErrorCode::EngineMissing, format!("{program} isn't installed on {host}."))
+            .with_remediation(format!("Install it there, or run `{check}` to check. Pick another host, or add an AI from this computer."))),
+        Err(e) if e.code == ErrorCode::TimedOut => Err(e.with_remediation(format!(
+            "The check `{check}` didn't answer within {} seconds. Check that this computer can reach {host}, then try again.",
+            SSH_AGENT_CHECK_WAIT.as_secs()
+        ))),
+        Err(e) => {
+            Err(e.with_remediation(format!("The check `{check}` failed. Check that this computer can reach {host} and that {program} is installed there.")))
+        }
+    }
 }
 
 /// Kinds of backend. See `plan/05-ai-backends.md`.
@@ -692,8 +727,27 @@ impl AiHub {
 
     /// Like [`AiHub::add_backend`], with options.
     pub fn add_backend_with(&self, entry: BackendEntry, key: Option<String>) -> Result<(), ToolError> {
+        self.add_backend_with_check(entry, key, verify_remote_agent)
+    }
+
+    /// [`AiHub::add_backend_with`], with the remote-agent check passed in so tests can stand in
+    /// for ssh.
+    fn add_backend_with_check(
+        &self,
+        entry: BackendEntry,
+        key: Option<String>,
+        mut check: impl FnMut(&str, &str) -> Result<(), ToolError>,
+    ) -> Result<(), ToolError> {
         if entry.config.name.trim().is_empty() {
             return Err(ToolError::invalid("A backend needs a name."));
+        }
+        // A host from ~/.ssh/config is a suggestion, not proof that it has the agent (#62): an
+        // agent added for one is checked there first, and nothing is saved when it's absent.
+        if entry.config.kind == BackendKind::AgentCli
+            && let Some(host) = entry.config.ssh_host.as_deref().map(str::trim).filter(|h| !h.is_empty())
+        {
+            let program = crate::cli_agents::program_of(&entry.config, &entry.options)?;
+            check(host, &program)?;
         }
         let mut cfg = self.config_to_change()?;
         if let Some(k) = key.filter(|k| !k.trim().is_empty()) {
