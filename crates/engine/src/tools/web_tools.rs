@@ -2,7 +2,9 @@
 //! through source maps, inspecting HAR network captures, and recovering readable sources from
 //! minified bundles.
 
-use super::artifact_tools::{WalkOptions, abs_path, create_absent_dir, env, read_capped, rel_to, resolve_evidence_input, walk_dir, write_new_file};
+use super::artifact_tools::{
+    WALK_CUT_NOTE, WalkOptions, abs_path, create_absent_dir, env, read_capped, rel_to, resolve_evidence_input, walk_dir, write_new_file,
+};
 use crate::tool::{Ctx, Effects, Requires, ToolOutput, ToolSpec, Toolset, parse_params, schema_of};
 use craft_anything_analysis::web_har::{HarOptions, inspect_har};
 use craft_anything_analysis::web_scripts::{
@@ -422,7 +424,7 @@ fn collect_scripts(ctx: &Ctx<'_>, roots: &[String], max_files: usize) -> Result<
                 &ctx.cancel,
             )?;
             if w.truncated {
-                notes.push(format!("{base}: the folder listing was cut short by the file-count or depth limit"));
+                notes.push(format!("{base}: {WALK_CUT_NOTE}"));
             }
             for f in w.files.into_iter().filter(|f| craft_anything_analysis::js_app::is_script(&f.rel)) {
                 out.push((format!("{base}/{}", f.rel), f.abs));
@@ -665,7 +667,7 @@ mod tests {
         let e = Engine::new(crate::testing::session());
         let out_capped = dir.path().join("capped");
         let r = call(&e, "js_sources_restore", json!({"path": dist, "output_directory": out_capped, "max_files": 2})).unwrap();
-        let expected = json!(["dist: the folder listing was cut short by the file-count or depth limit"]);
+        let expected = json!(["dist: the folder listing was cut short by a file, entry, path-length or depth limit, or by entries that couldn't be read"]);
         assert_eq!(r["result"]["notes"], expected);
         let manifest: Value = serde_json::from_slice(&std::fs::read(out_capped.join("manifest.json")).unwrap()).unwrap();
         assert_eq!(manifest["notes"], expected);

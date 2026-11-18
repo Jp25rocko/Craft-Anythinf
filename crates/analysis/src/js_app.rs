@@ -259,9 +259,32 @@ pub fn join_rel(base_dir: &str, rel: &str) -> Option<String> {
 
 const SCRIPT_EXTS: &[&str] = &[".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".mts", ".cts"];
 
+/// Whether `path` names a TypeScript type-declaration file (`.d.ts`, `.d.mts`, `.d.cts`).
+fn is_ts_declaration(path: &str) -> bool {
+    let l = path.to_ascii_lowercase();
+    l.ends_with(".d.ts") || l.ends_with(".d.mts") || l.ends_with(".d.cts")
+}
+
+/// Map a compiled JavaScript specifier path (`.js`, `.mjs`, `.cjs`, `.jsx`) to its TypeScript
+/// source counterparts when analysing an unbuilt source tree.
+fn ts_source_fallbacks(path: &str) -> Vec<String> {
+    if let Some(stem) = path.strip_suffix(".js") {
+        vec![format!("{stem}.ts"), format!("{stem}.tsx")]
+    } else if let Some(stem) = path.strip_suffix(".mjs") {
+        vec![format!("{stem}.mts")]
+    } else if let Some(stem) = path.strip_suffix(".cjs") {
+        vec![format!("{stem}.cts")]
+    } else if let Some(stem) = path.strip_suffix(".jsx") {
+        vec![format!("{stem}.tsx")]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Whether `path` is an executable JavaScript or TypeScript module rather than a declaration file.
 pub fn is_script(path: &str) -> bool {
     let l = path.to_ascii_lowercase();
-    SCRIPT_EXTS.iter().any(|e| l.ends_with(e)) && !l.ends_with(".d.ts")
+    SCRIPT_EXTS.iter().any(|e| l.ends_with(e)) && !is_ts_declaration(&l)
 }
 
 fn is_html(path: &str) -> bool {
@@ -279,37 +302,62 @@ impl Resolver<'_> {
             return None;
         }
         let base = join_rel(from_dir, spec)?;
-        let candidates = [
-            base.clone(),
+        let mut candidates = vec![base.clone()];
+        candidates.extend(ts_source_fallbacks(&base));
+        candidates.extend([
             format!("{base}.js"),
             format!("{base}.mjs"),
             format!("{base}.cjs"),
             format!("{base}.ts"),
             format!("{base}.tsx"),
+            format!("{base}.mts"),
+            format!("{base}.cts"),
             format!("{base}.jsx"),
             format!("{base}.json"),
             format!("{base}/index.js"),
-            format!("{base}/index.ts"),
             format!("{base}/index.mjs"),
-        ];
-        candidates.into_iter().find(|c| self.files.contains(c))
+            format!("{base}/index.cjs"),
+            format!("{base}/index.ts"),
+            format!("{base}/index.tsx"),
+            format!("{base}/index.mts"),
+            format!("{base}/index.cts"),
+            format!("{base}/index.jsx"),
+        ]);
+        candidates.into_iter().find(|c| !is_ts_declaration(c) && self.files.contains(c))
     }
 
-    /// A path written in code (`preload.js`, `renderer/index.html`), tried from the module's
-    /// folder first and then from the app root.
+    /// A path written in code (`preload.js`, `renderer/index.html`), tried as an exact match from
+    /// the module's folder and the app root first, then via TypeScript source counterparts.
     fn resolve_path(&self, module_dir: &str, root: &str, p: &str) -> Option<String> {
         let p = p.trim_start_matches("file://");
         for base in [module_dir, root] {
             if let Some(j) = join_rel(base, p)
+                && !is_ts_declaration(&j)
                 && self.files.contains(&j)
             {
                 return Some(j);
             }
         }
-        // Last resort: a unique file with that tail.
+        for base in [module_dir, root] {
+            if let Some(j) = join_rel(base, p)
+                && let Some(ts) = ts_source_fallbacks(&j).into_iter().find(|c| !is_ts_declaration(c) && self.files.contains(c))
+            {
+                return Some(ts);
+            }
+        }
+        // Last resort: a unique file with that tail (or a unique TypeScript source counterpart
+        // across all fallback extensions when no exact tail exists).
         let tail = p.trim_start_matches("./").trim_start_matches('/');
-        let hits: Vec<&String> = self.files.iter().filter(|f| f.ends_with(&format!("/{tail}")) || f.as_str() == tail).collect();
-        if hits.len() == 1 { hits.first().map(|s| (*s).clone()) } else { None }
+        let tail_hits = |t: &str| -> Vec<&String> {
+            let suffix = format!("/{t}");
+            self.files.iter().filter(|f| !is_ts_declaration(f) && (f.ends_with(&suffix) || f.as_str() == t)).collect()
+        };
+        let exact_hits = tail_hits(tail);
+        if !exact_hits.is_empty() {
+            return if exact_hits.len() == 1 { exact_hits.first().map(|s| (*s).clone()) } else { None };
+        }
+        let fallback_hits: Vec<&String> = ts_source_fallbacks(tail).into_iter().flat_map(|fb| tail_hits(&fb)).collect();
+        if fallback_hits.len() == 1 { fallback_hits.first().map(|s| (*s).clone()) } else { None }
     }
 }
 
@@ -492,12 +540,15 @@ pub fn analyze_application(input: &AppInput, opts: &AppOptions, cancelled: &dyn 
                 if let Some(src) = &s.src
                     && !src.contains("://")
                 {
-                    let r = join_rel(&dir, src).filter(|p| file_set.contains(p)).or_else(|| resolver.resolve_path(&dir, &pkg_root, src));
+                    let r = resolver.resolve_path(&dir, &pkg_root, src);
                     v.push(ResolvedImport { kind: "html-script".into(), specifier: src.clone(), resolved: r, line: s.line });
                 }
             }
             for p in &h.preloads {
-                let r = join_rel(&dir, p).filter(|x| file_set.contains(x));
+                let r = (!p.contains("://"))
+                    .then(|| join_rel(&dir, p))
+                    .flatten()
+                    .and_then(|j| std::iter::once(j.clone()).chain(ts_source_fallbacks(&j)).find(|c| !is_ts_declaration(c) && file_set.contains(c)));
                 v.push(ResolvedImport { kind: "modulepreload".into(), specifier: p.clone(), resolved: r, line: 0 });
             }
         }

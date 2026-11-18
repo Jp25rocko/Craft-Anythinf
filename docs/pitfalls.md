@@ -908,9 +908,19 @@ on Windows (`write_atomic`); show errors where the person is looking.
 `max_files` but went on through the whole tree, read each folder's entries into one list before
 looking at any limit, and kept every folder and link it met: a tree of empty folders or links, or
 one folder with millions of names, had no limit at all. Count what is examined, not only what is
-kept; stop at the first thing over a limit; bound what is held while collecting (the first names in
-order, so a cut result is the same every time); and test the shapes that never reach the limit on
-the thing counted (no files, only links, one huge folder).
+kept; stop at the first thing over a limit; bound what is held while collecting; and test the
+shapes that never reach the limit on the thing counted (no files, only links, one huge folder).
+The fix repeated it one level down: to keep a folder's first names in order it held only as many
+names as the limit, but read the folder to its end to find them, 100,000 entries for a limit of 2,
+and its test checked what was held, not what was read. A limit on the work is a count of reads:
+take what the limit allows and one more (which says there is more), and assert how many times the
+source was read with a counting iterator. That costs the stable order: a cut listing holds what
+the system returned first, and the docs must say so rather than promise the same cut every time.
+The same loop skipped entries that failed to read and returned what was left as the whole folder;
+64 failures in a row came back as an empty folder listed in full, and a test expected exactly
+that. Anything skipped while reading is reported with the result (a count, a reason, a typed
+"incomplete" flag), and a test of an error path asserts what the caller is told, not only that
+the loop ended.
 
 **An ignore file was read whole.** `walk_dir` read each `.gitignore` with `read_to_string` and
 swallowed every error: a sparse oversized file could size the allocation until the process aborted,
