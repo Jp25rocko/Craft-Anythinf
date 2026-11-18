@@ -1,8 +1,9 @@
 //! Pi coding agent (`pi --mode json`).
 //!
 //! Pi runs one turn per invocation in JSONL event mode (`--mode json`), reading the prompt from
-//! stdin so long prompts avoid OS command-line limits (#402). Models and thinking support are
-//! discovered with `pi --offline --list-models`, and sessions resume with `--session <id>`.
+//! stdin so long prompts avoid OS command-line limits (#402). Models and per-model thinking
+//! capabilities are discovered via Pi's RPC `get_available_models` query (falling back to
+//! `pi --offline --list-models` when needed), and sessions resume with `--session <id>`.
 
 use super::*;
 use crate::Effort;
@@ -27,33 +28,262 @@ fn has_flag(args: &[String], flag: &str, short: Option<&str>) -> bool {
     args.iter().any(|a| a == flag || a.starts_with(&prefix) || short.is_some_and(|s| a == s || a.starts_with(&format!("{s}="))))
 }
 
+fn match_value_flag(arg: &str, names: &[&str]) -> Option<bool> {
+    for &name in names {
+        if arg == name {
+            return Some(true);
+        }
+        if let Some(rest) = arg.strip_prefix(name)
+            && rest.starts_with('=')
+        {
+            return Some(false);
+        }
+    }
+    None
+}
+
+/// Resource-loading flags from `options.args` that affect which provider models `pi` discovers.
+/// Run-only flags (`--mode`, `--session`, `--tools`, …) stay out of model discovery.
+pub(crate) fn discovery_resource_args(extra: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while let Some(arg) = extra.get(i) {
+        if let Some(takes_next) = match_value_flag(arg, &["--extension", "-e"]) {
+            out.push(arg.clone());
+            if takes_next && let Some(val) = extra.get(i + 1) {
+                out.push(val.clone());
+                i += 1;
+            }
+        } else if matches!(arg.as_str(), "--no-extensions" | "-ne" | "--approve" | "-a" | "--no-approve" | "-na") {
+            out.push(arg.clone());
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Remove saved flags that could bypass tool, extension, or session limits in restricted runs.
+pub(crate) fn strip_restricted_args(extra: &[String], question: bool, reads_checked: bool) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while let Some(arg) = extra.get(i) {
+        if let Some(takes_next) = match_value_flag(arg, &["--tools", "-t", "--exclude-tools", "-xt"]) {
+            if takes_next && extra.get(i + 1).is_some() {
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+        if matches!(arg.as_str(), "--no-tools" | "-nt" | "--no-builtin-tools" | "-nbt") {
+            i += 1;
+            continue;
+        }
+        if reads_checked {
+            if let Some(takes_next) = match_value_flag(arg, &["--extension", "-e"]) {
+                if takes_next && extra.get(i + 1).is_some() {
+                    i += 1;
+                }
+                i += 1;
+                continue;
+            }
+            if matches!(arg.as_str(), "--approve" | "-a") {
+                i += 1;
+                continue;
+            }
+        }
+        if question {
+            if let Some(takes_next) = match_value_flag(arg, &["--session", "--session-id", "--fork"]) {
+                if takes_next && extra.get(i + 1).is_some() {
+                    i += 1;
+                }
+                i += 1;
+                continue;
+            }
+            if matches!(arg.as_str(), "--continue" | "-c" | "--resume" | "-r") {
+                i += 1;
+                continue;
+            }
+        }
+        out.push(arg.clone());
+        i += 1;
+    }
+    out
+}
+
+fn supported_thinking(reasoning: bool, map: Option<&serde_json::Map<String, Value>>) -> Vec<Effort> {
+    if !reasoning {
+        return Vec::new();
+    }
+    Effort::CLI_ALL
+        .into_iter()
+        .filter(|&effort| {
+            let key = pi_thinking(effort);
+            let mapped = map.and_then(|m| m.get(key));
+            match mapped {
+                Some(Value::Null) => false,
+                None if matches!(effort, Effort::Xhigh | Effort::Max) => false,
+                _ => true,
+            }
+        })
+        .collect()
+}
+
+/// Parse Pi RPC `get_available_models` response line into sorted, deduplicated chat models.
+pub(crate) fn parse_rpc_models(bytes: &[u8]) -> Result<Option<Vec<models::AgentModel>>, ToolError> {
+    if bytes.len() >= 4 * 1024 * 1024 {
+        return Err(ToolError::new(ErrorCode::OverLimit, "Pi's model list is too large."));
+    }
+    let text = String::from_utf8_lossy(bytes);
+    let Some(response) = text.lines().find_map(|line| {
+        let v: Value = serde_json::from_str(line.trim()).ok()?;
+        (v.get("type").and_then(Value::as_str) == Some("response") && v.get("command").and_then(Value::as_str) == Some("get_available_models")).then_some(v)
+    }) else {
+        return Ok(None);
+    };
+    if response.get("success").and_then(Value::as_bool) != Some(true) {
+        let msg = response.get("error").and_then(Value::as_str).unwrap_or("Pi failed to list available models.");
+        return Err(ToolError::new(ErrorCode::ProgramFailed, msg));
+    }
+    let Some(items) = response.pointer("/data/models").and_then(Value::as_array) else {
+        return Err(ToolError::new(ErrorCode::GarbledOutput, "Pi returned an unreadable model list."));
+    };
+    let mut out = BTreeMap::new();
+    for item in items {
+        if let Some(kind) = item.get("type").and_then(Value::as_str)
+            && kind != "chat"
+        {
+            continue;
+        }
+        let Some(provider) = item.get("provider").and_then(Value::as_str).filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        let Some(model_id) = item.get("id").and_then(Value::as_str).filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        let label = item.get("name").and_then(Value::as_str).filter(|s| !s.is_empty()).unwrap_or(model_id);
+        let reasoning = item.get("reasoning").and_then(Value::as_bool).unwrap_or(false);
+        let map = item.get("thinkingLevelMap").and_then(Value::as_object);
+        let id = format!("{provider}/{model_id}");
+        out.insert(id.clone(), models::AgentModel { id, name: format!("{label} ({provider})"), thinking: supported_thinking(reasoning, map) });
+    }
+    Ok(Some(out.into_values().collect()))
+}
+
+fn is_yes_no(s: &str) -> bool {
+    s.eq_ignore_ascii_case("yes") || s.eq_ignore_ascii_case("no")
+}
+
 /// Parse `pi --offline --list-models` tabular output into sorted, deduplicated models.
+/// Only rows after the 6-column table header with valid `yes`/`no` capability flags are accepted,
+/// so sign-in guidance text when no models exist yields an empty list rather than bogus entries.
 pub(crate) fn parse_list_models(bytes: &[u8]) -> Result<Vec<models::AgentModel>, ToolError> {
     if bytes.len() >= 4 * 1024 * 1024 {
         return Err(ToolError::new(ErrorCode::OverLimit, "Pi's model list is too large."));
     }
     let text = String::from_utf8_lossy(bytes);
     let mut out = BTreeMap::new();
+    let mut saw_header = false;
     for line in text.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
         let cols: Vec<&str> = trimmed.split_whitespace().collect();
-        let [provider, model, _, _, thinking_col, ..] = cols.as_slice() else {
-            continue;
-        };
-        if provider.eq_ignore_ascii_case("provider") && model.eq_ignore_ascii_case("model") {
+        if !saw_header {
+            if let [c0, c1, c2, c3, c4, c5] = cols.as_slice()
+                && c0.eq_ignore_ascii_case("provider")
+                && c1.eq_ignore_ascii_case("model")
+                && c2.eq_ignore_ascii_case("context")
+                && c3.eq_ignore_ascii_case("max-out")
+                && c4.eq_ignore_ascii_case("thinking")
+                && c5.eq_ignore_ascii_case("images")
+            {
+                saw_header = true;
+            }
             continue;
         }
-        if provider.is_empty() || model.is_empty() {
+        let [provider, model, _ctx, _max_out, thinking_col, images_col] = cols.as_slice() else {
+            continue;
+        };
+        if provider.is_empty() || model.is_empty() || !is_yes_no(thinking_col) || !is_yes_no(images_col) {
             continue;
         }
         let id = format!("{provider}/{model}");
-        let thinking = if thinking_col.eq_ignore_ascii_case("yes") { Effort::CLI_ALL.to_vec() } else { Vec::new() };
+        // Tabular `--list-models` only reports yes/no; without `thinkingLevelMap`, `xhigh`/`max`
+        // cannot be verified per model, so report `off..=high` (the base reasoning depths Pi
+        // guarantees for every `reasoning: true` model).
+        let thinking =
+            if thinking_col.eq_ignore_ascii_case("yes") { vec![Effort::None, Effort::Minimal, Effort::Low, Effort::Medium, Effort::High] } else { Vec::new() };
         out.insert(id.clone(), models::AgentModel { id, name: format!("{model} ({provider})"), thinking });
     }
     Ok(out.into_values().collect())
+}
+
+fn run_pi_query(
+    adapter: &Pi,
+    program: &str,
+    host: Option<&str>,
+    directory: Option<&Path>,
+    raw_args: Vec<String>,
+    stdin: Option<&str>,
+    stop: &Stop,
+) -> Result<craft_anything_platform::Output, ToolError> {
+    let mut proc = match host {
+        Some(host) => {
+            let mut remote = vec![program.to_string()];
+            remote.extend(raw_args);
+            Process::new("ssh").args(crate::ssh::ssh_args(host, &remote))
+        }
+        None => {
+            let mut p = adapter.process(program).args(raw_args);
+            if let Some(dir) = directory {
+                p = p.cwd(dir);
+            }
+            p
+        }
+    };
+    if let Some(input) = stdin {
+        proc = proc.stdin_bytes(input);
+    }
+    let stop2 = stop.clone();
+    proc = proc
+        .timeout(Duration::from_secs(15))
+        .idle_timeout(Duration::from_secs(10))
+        .stdout_cap(4 * 1024 * 1024)
+        .stderr_cap(64 * 1024)
+        .cancel_when(move || stop2.is_stopped())
+        .remediation("Check Pi on this computer (`pi --list-models`), then reload the models.");
+    proc.run()
+}
+
+fn accumulate_usage(p: &mut StreamParser, usage: &Value) {
+    let count = |k: &str| usage.get(k).and_then(Value::as_u64).unwrap_or(0);
+    p.input_tokens = p.input_tokens.saturating_add(count("input")).saturating_add(count("cacheRead")).saturating_add(count("cacheWrite"));
+    // Pi's `output` already includes `reasoning` tokens.
+    p.output_tokens = p.output_tokens.saturating_add(count("output"));
+    if !p.cost_incomplete {
+        p.cost_usd = usage.pointer("/cost/total").and_then(Value::as_f64).filter(|n| n.is_finite() && *n >= 0.0).and_then(|cost| {
+            let total = p.cost_usd.unwrap_or(0.0) + cost;
+            total.is_finite().then_some(total)
+        });
+        if p.cost_usd.is_none() {
+            p.cost_incomplete = true;
+        }
+    }
+}
+
+fn assistant_error_text(msg: &Value) -> Option<String> {
+    let stop = msg.get("stopReason").and_then(Value::as_str).unwrap_or_default();
+    if !matches!(stop, "error" | "aborted") {
+        return None;
+    }
+    Some(
+        msg.get("errorMessage")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(if stop == "aborted" { "run aborted" } else { "run failed" })
+            .to_string(),
+    )
 }
 
 impl AgentAdapter for Pi {
@@ -74,30 +304,21 @@ impl AgentAdapter for Pi {
     ) -> Result<Vec<models::AgentModel>, ToolError> {
         stop.check()?;
         let program = super::super::program_of(config, options)?;
-        let raw_args = ["--offline".to_string(), "--list-models".to_string()];
-        let mut proc = match config.ssh_host.as_deref().filter(|h| !h.trim().is_empty()) {
-            Some(host) => {
-                let mut remote = vec![program.clone()];
-                remote.extend(raw_args);
-                Process::new("ssh").args(crate::ssh::ssh_args(host, &remote))
-            }
-            None => {
-                let mut p = self.process(&program).args(raw_args);
-                if let Some(dir) = directory {
-                    p = p.cwd(dir);
-                }
-                p
-            }
-        };
-        let stop2 = stop.clone();
-        proc = proc
-            .timeout(Duration::from_secs(15))
-            .idle_timeout(Duration::from_secs(10))
-            .stdout_cap(4 * 1024 * 1024)
-            .stderr_cap(64 * 1024)
-            .cancel_when(move || stop2.is_stopped())
-            .remediation("Check Pi on this computer (`pi --list-models`), then reload the models.");
-        let out = proc.run()?;
+        let host = config.ssh_host.as_deref().map(str::trim).filter(|h| !h.is_empty());
+        let resource_args = discovery_resource_args(&options.args);
+
+        let mut rpc_args = vec!["--mode".to_string(), "rpc".to_string(), "--no-session".to_string(), "--offline".to_string()];
+        rpc_args.extend(resource_args.iter().cloned());
+        if let Ok(out) = run_pi_query(self, &program, host, directory, rpc_args, Some("{\"type\":\"get_available_models\"}\n"), stop)
+            && out.success
+            && let Some(models) = parse_rpc_models(&out.stdout)?
+        {
+            return Ok(models);
+        }
+
+        let mut list_args = vec!["--offline".to_string(), "--list-models".to_string()];
+        list_args.extend(resource_args);
+        let out = run_pi_query(self, &program, host, directory, list_args, None, stop)?;
         if !out.success {
             let name = Path::new(&program).file_name().map_or_else(|| program.clone(), |n| n.to_string_lossy().into_owned());
             return Err(craft_anything_platform::process::nonzero_error_with(&name, &out, None));
@@ -124,18 +345,30 @@ impl AgentAdapter for Pi {
         Ok(())
     }
 
+    /// Pi runs its own tools and extensions without asking Craft Anything first, so Clean room
+    /// builds and analyses cannot enforce Craft Anything's approval policy.
+    fn validate_access(&self, access: Access) -> Result<(), ToolError> {
+        match access {
+            Access::CleanRoomBuild | Access::CleanRoomAnalyse => {
+                Err(ToolError::invalid("Pi runs its own tools and extensions without asking Craft Anything first, so Clean room can't hold it back.")
+                    .with_remediation("Switch to Deep mode to use Pi, or choose an agent that checks reads and edits with Craft Anything."))
+            }
+            Access::Build | Access::Analyse | Access::Question | Access::CleanRoomQuestion => Ok(()),
+        }
+    }
+
     fn args(&self, cx: &ArgsCx) -> Vec<String> {
         let mut a = vec!["--mode".to_string(), "json".to_string()];
         if cx.question {
-            a.push("--no-session".into());
+            a.extend(["--no-session".into(), "--no-mcp".into()]);
             if cx.reads_checked {
-                a.push("--no-tools".into());
+                a.extend(["--no-tools".into(), "--no-extensions".into()]);
             } else {
                 a.extend(["--tools".into(), "read,grep,find,ls".into()]);
             }
         } else if !cx.builder {
             if cx.reads_checked {
-                a.push("--no-builtin-tools".into());
+                a.extend(["--no-session".into(), "--no-mcp".into(), "--no-tools".into(), "--no-extensions".into()]);
             } else {
                 a.extend(["--tools".into(), "read,grep,find,ls".into()]);
             }
@@ -149,12 +382,16 @@ impl AgentAdapter for Pi {
         if let Some(r) = cx.resume.filter(|_| !cx.question) {
             a.extend(["--session".into(), r.to_string()]);
         }
-        a.extend(cx.options.args.iter().cloned());
+        if !cx.builder || cx.question || cx.reads_checked {
+            a.extend(strip_restricted_args(&cx.options.args, cx.question, cx.reads_checked));
+        } else {
+            a.extend(cx.options.args.iter().cloned());
+        }
         a
     }
 
     fn required_flags(&self) -> (&'static [&'static str], &'static [&'static str]) {
-        (&["--help"], &["--mode", "--list-models"])
+        (&["--help"], &["--mode"])
     }
 
     fn plain_fallback(&self) -> bool {
@@ -190,6 +427,9 @@ impl AgentAdapter for Pi {
                     p.session_id = Some(id.to_string());
                     p.run_session = Some(id.to_string());
                 }
+            }
+            "agent_start" => {
+                p.provisional_error = None;
             }
             "message_update" => {
                 if let Some(ev) = v.get("assistantMessageEvent") {
@@ -228,20 +468,18 @@ impl AgentAdapter for Pi {
                 }
             }
             "turn_end" => {
-                if let Some(usage) = v.pointer("/message/usage") {
-                    let count = |k: &str| usage.get(k).and_then(Value::as_u64).unwrap_or(0);
-                    p.input_tokens = p.input_tokens.saturating_add(count("input")).saturating_add(count("cacheRead")).saturating_add(count("cacheWrite"));
-                    // Pi's `output` already includes `reasoning` tokens.
-                    p.output_tokens = p.output_tokens.saturating_add(count("output"));
-                    if !p.cost_incomplete {
-                        p.cost_usd = usage.pointer("/cost/total").and_then(Value::as_f64).filter(|n| n.is_finite() && *n >= 0.0).and_then(|cost| {
-                            let total = p.cost_usd.unwrap_or(0.0) + cost;
-                            total.is_finite().then_some(total)
-                        });
-                        if p.cost_usd.is_none() {
-                            p.cost_incomplete = true;
-                        }
+                if let Some(msg) = v.get("message") {
+                    if let Some(usage) = msg.get("usage") {
+                        accumulate_usage(p, usage);
                     }
+                    if assistant_error_text(msg).is_none() {
+                        p.provisional_error = None;
+                    }
+                }
+            }
+            "compaction_end" => {
+                if let Some(usage) = v.pointer("/result/usage") {
+                    accumulate_usage(p, usage);
                 }
             }
             "auto_retry_start" => {
@@ -257,24 +495,28 @@ impl AgentAdapter for Pi {
                         .and_then(Value::as_array)
                         .and_then(|ms| ms.iter().rev().find(|m| m.get("role").and_then(Value::as_str) == Some("assistant")))
                 {
-                    let stop = last.get("stopReason").and_then(Value::as_str).unwrap_or_default();
-                    if matches!(stop, "error" | "aborted") {
-                        let why = last.get("errorMessage").and_then(Value::as_str).filter(|s| !s.trim().is_empty()).unwrap_or(if stop == "aborted" {
-                            "run aborted"
-                        } else {
-                            "run failed"
-                        });
-                        p.failure.get_or_insert_with(|| TurnFailure::new(FailureKind::Unknown));
-                        out.push(AgentEvent::Error { message: format!("Pi: {why}"), remediation: None, log: None });
-                    }
+                    p.provisional_error = assistant_error_text(last);
                 }
             }
             "agent_settled" => {
                 p.saw_result = true;
+                let aborted = v.get("aborted").and_then(Value::as_bool) == Some(true);
+                if let Some(why) = p.provisional_error.take().or_else(|| aborted.then(|| "run aborted".to_string())) {
+                    p.failure.get_or_insert_with(|| TurnFailure::new(FailureKind::Unknown));
+                    out.push(AgentEvent::Error { message: format!("Pi: {why}"), remediation: None, log: None });
+                }
             }
             _ => {}
         }
         out
+    }
+
+    fn finish(&self, p: &mut StreamParser) -> Vec<AgentEvent> {
+        if let Some(why) = p.provisional_error.take() {
+            p.failure.get_or_insert_with(|| TurnFailure::new(FailureKind::Unknown));
+            return vec![AgentEvent::Error { message: format!("Pi: {why}"), remediation: None, log: None }];
+        }
+        Vec::new()
     }
 
     fn parse_stderr(&self, p: &mut StreamParser, line: &str) -> Vec<AgentEvent> {
@@ -299,23 +541,114 @@ mod tests {
         let default_opts = BackendOptions::default();
         assert_eq!(args(true, false, false, None, &default_opts), ["--mode", "json"]);
         assert_eq!(args(false, false, false, None, &default_opts), ["--mode", "json", "--tools", "read,grep,find,ls"]);
-        assert_eq!(args(false, true, false, None, &default_opts), ["--mode", "json", "--no-builtin-tools"]);
-        assert_eq!(args(false, false, true, Some("sess-1"), &default_opts), ["--mode", "json", "--no-session", "--tools", "read,grep,find,ls"]);
-        assert_eq!(args(false, true, true, Some("sess-1"), &default_opts), ["--mode", "json", "--no-session", "--no-tools"]);
+        assert_eq!(args(false, true, false, None, &default_opts), ["--mode", "json", "--no-session", "--no-mcp", "--no-tools", "--no-extensions"]);
+        assert_eq!(args(false, false, true, Some("sess-1"), &default_opts), ["--mode", "json", "--no-session", "--no-mcp", "--tools", "read,grep,find,ls"]);
+        assert_eq!(args(false, true, true, Some("sess-1"), &default_opts), ["--mode", "json", "--no-session", "--no-mcp", "--no-tools", "--no-extensions"]);
 
         let configured = BackendOptions {
             cli_model: Some("opencode-go/deepseek-v4.1-flash".into()),
             cli_thinking: Some(Effort::None),
-            args: vec!["--no-extensions".into()],
+            args: vec!["--no-extensions".into(), "-t".into(), "read,bash".into()],
             ..Default::default()
         };
         assert_eq!(
             args(true, false, false, Some("sess-1"), &configured),
-            ["--mode", "json", "--model", "opencode-go/deepseek-v4.1-flash", "--thinking", "off", "--session", "sess-1", "--no-extensions"]
+            ["--mode", "json", "--model", "opencode-go/deepseek-v4.1-flash", "--thinking", "off", "--session", "sess-1", "--no-extensions", "-t", "read,bash"]
         );
         assert!(Pi.resumes() && Pi.answers_questions() && Pi.prompt_on_stdin() && Pi.has_model_catalog());
         assert_eq!(Pi.stdin_text("PRE ", "hi"), "PRE hi");
         assert!(AgentAdapters::built_in().for_agent("pi").ids().contains(&"pi"));
+    }
+
+    #[test]
+    fn pi_restricts_saved_tool_extension_and_session_overrides_outside_builds() {
+        let saved = BackendOptions {
+            args: vec![
+                "--tools".into(),
+                "read,bash,write".into(),
+                "-t=edit".into(),
+                "--exclude-tools".into(),
+                "read".into(),
+                "-xt=ls".into(),
+                "--no-builtin-tools".into(),
+                "-nbt".into(),
+                "--no-tools".into(),
+                "-nt".into(),
+                "-e".into(),
+                "./custom.ts".into(),
+                "--extension=./other.ts".into(),
+                "--approve".into(),
+                "--session".into(),
+                "old-sess".into(),
+                "--session-id=123".into(),
+                "-c".into(),
+                "--offline".into(),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            args(false, false, true, Some("sess-1"), &saved),
+            [
+                "--mode",
+                "json",
+                "--no-session",
+                "--no-mcp",
+                "--tools",
+                "read,grep,find,ls",
+                "-e",
+                "./custom.ts",
+                "--extension=./other.ts",
+                "--approve",
+                "--offline"
+            ]
+        );
+        assert_eq!(
+            args(false, true, true, Some("sess-1"), &saved),
+            ["--mode", "json", "--no-session", "--no-mcp", "--no-tools", "--no-extensions", "--offline"]
+        );
+        assert_eq!(
+            args(false, false, false, None, &saved),
+            [
+                "--mode",
+                "json",
+                "--tools",
+                "read,grep,find,ls",
+                "-e",
+                "./custom.ts",
+                "--extension=./other.ts",
+                "--approve",
+                "--session",
+                "old-sess",
+                "--session-id=123",
+                "-c",
+                "--offline",
+            ]
+        );
+    }
+
+    #[test]
+    fn pi_validates_access_and_forwards_only_discovery_resources() {
+        assert!(Pi.validate_access(Access::Build).is_ok());
+        assert!(Pi.validate_access(Access::Analyse).is_ok());
+        assert!(Pi.validate_access(Access::Question).is_ok());
+        assert!(Pi.validate_access(Access::CleanRoomQuestion).is_ok());
+        assert!(Pi.validate_access(Access::CleanRoomBuild).is_err());
+        assert!(Pi.validate_access(Access::CleanRoomAnalyse).is_err());
+
+        let extra = vec![
+            "-e".into(),
+            "./provider.ts".into(),
+            "--extension=./extra.ts".into(),
+            "--no-extensions".into(),
+            "--session".into(),
+            "s1".into(),
+            "--mode".into(),
+            "json".into(),
+            "--tools".into(),
+            "read".into(),
+            "-a".into(),
+        ];
+        assert_eq!(discovery_resource_args(&extra), ["-e", "./provider.ts", "--extension=./extra.ts", "--no-extensions", "-a"]);
     }
 
     #[test]
@@ -332,20 +665,52 @@ mod tests {
     }
 
     #[test]
-    fn pi_list_models_parses_table_and_thinking() {
+    fn pi_rpc_models_parses_thinking_level_map_and_empty_catalog() {
+        let rpc = json!({
+            "type": "response",
+            "command": "get_available_models",
+            "success": true,
+            "data": {
+                "models": [
+                    {"id": "claude-haiku-5-5", "name": "Claude Haiku 5.5", "provider": "opencode-go", "reasoning": true, "type": "chat", "thinkingLevelMap": {"xhigh": "xhigh", "max": "max"}},
+                    {"id": "minimax-m3", "name": "MiniMax-M3", "provider": "opencode-go", "reasoning": true, "type": "chat"},
+                    {"id": "plain-embed", "name": "Embed", "provider": "local", "reasoning": false, "type": "embedding"},
+                    {"id": "plain-chat", "name": "Plain", "provider": "local", "reasoning": false, "type": "chat"}
+                ]
+            }
+        })
+        .to_string();
+        let models = parse_rpc_models(rpc.as_bytes()).unwrap().unwrap();
+        assert_eq!(models.len(), 3);
+        assert_eq!(models[0].id, "local/plain-chat");
+        assert!(models[0].thinking.is_empty());
+        assert_eq!(models[1].id, "opencode-go/claude-haiku-5-5");
+        assert_eq!(models[1].thinking, Effort::CLI_ALL);
+        assert_eq!(models[2].id, "opencode-go/minimax-m3");
+        assert_eq!(models[2].thinking, [Effort::None, Effort::Minimal, Effort::Low, Effort::Medium, Effort::High]);
+
+        let empty = br#"{"type":"response","command":"get_available_models","success":true,"data":{"models":[]}}"#;
+        assert!(parse_rpc_models(empty).unwrap().unwrap().is_empty());
+    }
+
+    #[test]
+    fn pi_list_models_ignores_sign_in_guidance_and_parses_table() {
+        let no_models = b"No models available. Use /login to log into a provider via OAuth or API key. See:\n  /docs/providers.md\n  /docs/models.md\n";
+        assert!(parse_list_models(no_models).unwrap().is_empty());
+
         let sample = b"provider     model               context  max-out  thinking  images\nopencode-go  deepseek-v4.1-flash 1M       384K     yes       yes\nlocal        plain-coder         32K      8K       no        no\n";
         let models = parse_list_models(sample).unwrap();
         assert_eq!(models.len(), 2);
         assert_eq!(models[0].id, "local/plain-coder");
         assert!(models[0].thinking.is_empty());
         assert_eq!(models[1].id, "opencode-go/deepseek-v4.1-flash");
-        assert_eq!(models[1].thinking, Effort::CLI_ALL);
+        assert_eq!(models[1].thinking, [Effort::None, Effort::Minimal, Effort::Low, Effort::Medium, Effort::High]);
     }
 
     #[test]
-    fn pi_stream_parsing_handles_session_deltas_tools_usage_and_errors() {
+    fn pi_stream_parsing_handles_session_compaction_recovery_and_unrecovered_errors() {
         let adapter: Arc<dyn AgentAdapter> = Arc::new(Pi);
-        let mut p = StreamParser::new(adapter);
+        let mut p = StreamParser::new(adapter.clone());
 
         assert!(p.line(r#"{"type":"session","version":3,"id":"sess-42","cwd":"/tmp"}"#).is_empty());
         assert_eq!(p.session_id.as_deref(), Some("sess-42"));
@@ -361,17 +726,40 @@ mod tests {
             matches!(evs.as_slice(), [AgentEvent::ToolFinished { call_id, tool, ok: true, summary, .. }] if call_id == "call_1" && tool == "read" && summary == "[package]")
         );
 
-        assert!(p.line(r#"{"type":"turn_end","message":{"role":"assistant","usage":{"input":100,"output":25,"cacheRead":20,"cacheWrite":5,"reasoning":10,"cost":{"total":0.015}}}}"#).is_empty());
-        assert_eq!(p.input_tokens, 125);
-        assert_eq!(p.output_tokens, 25);
-        assert_eq!(p.cost_usd, Some(0.015));
+        assert!(p.line(r#"{"type":"turn_end","message":{"role":"assistant","stopReason":"stop","usage":{"input":100,"output":25,"cacheRead":20,"cacheWrite":5,"reasoning":10,"cost":{"total":0.015}}}}"#).is_empty());
+        assert!(p.line(r#"{"type":"compaction_end","reason":"overflow","result":{"usage":{"input":50,"output":10,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.005}}}}"#).is_empty());
+        assert_eq!(p.input_tokens, 175);
+        assert_eq!(p.output_tokens, 35);
+        assert!((p.cost_usd.unwrap() - 0.020).abs() < 1e-9);
 
-        let evs = p.line(r#"{"type":"agent_end","willRetry":false,"messages":[{"role":"assistant","stopReason":"error","errorMessage":"401 unauthorized"}]}"#);
-        assert!(matches!(evs.as_slice(), [AgentEvent::Error { message, .. }] if message == "Pi: 401 unauthorized"));
-        assert!(p.failure.is_some());
-
+        // Provisional overflow error in agent_end followed by compaction recovery succeeds on settlement.
+        assert!(
+            p.line(r#"{"type":"agent_end","willRetry":false,"messages":[{"role":"assistant","stopReason":"error","errorMessage":"context overflow"}]}"#)
+                .is_empty()
+        );
+        assert!(p.failure.is_none());
+        assert!(p.line(r#"{"type":"turn_end","message":{"role":"assistant","stopReason":"stop","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.001}}}}"#).is_empty());
+        assert!(p.line(r#"{"type":"agent_end","willRetry":false,"messages":[{"role":"assistant","stopReason":"stop"}]}"#).is_empty());
         assert!(p.line(r#"{"type":"agent_settled","aborted":false}"#).is_empty());
-        assert!(p.saw_result);
+        assert!(p.saw_result && p.failure.is_none());
+
+        // Unrecovered error is emitted only when agent_settled confirms failure.
+        let mut p2 = StreamParser::new(adapter.clone());
+        assert!(
+            p2.line(r#"{"type":"agent_end","willRetry":false,"messages":[{"role":"assistant","stopReason":"error","errorMessage":"401 unauthorized"}]}"#)
+                .is_empty()
+        );
+        assert!(p2.failure.is_none());
+        let evs = p2.line(r#"{"type":"agent_settled","aborted":false}"#);
+        assert!(matches!(evs.as_slice(), [AgentEvent::Error { message, .. }] if message == "Pi: 401 unauthorized"));
+        assert!(p2.saw_result && p2.failure.is_some());
+
+        // Process exiting cleanly without agent_settled still flushes a pending error.
+        let mut p3 = StreamParser::new(adapter);
+        assert!(p3.line(r#"{"type":"agent_end","willRetry":false,"messages":[{"role":"assistant","stopReason":"aborted"}]}"#).is_empty());
+        let evs = p3.finish();
+        assert!(matches!(evs.as_slice(), [AgentEvent::Error { message, .. }] if message == "Pi: run aborted"));
+        assert!(p3.failure.is_some());
 
         assert!(Pi.parse_stderr(&mut p, "No session found matching 'sess-missing'").is_empty());
         assert!(p.session_missing);
