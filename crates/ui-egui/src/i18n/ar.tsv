@@ -305,6 +305,7 @@ Couldn't look through that folder.	تعذّر تصفّح ذلك المجلد.
 Couldn't open it.	تعذّر فتحه.
 Couldn't open the folder.	تعذّر فتح المجلد.
 Couldn't open {}: {}	تعذّر فتح {}: {}
+Couldn't save your settings.	تعذّر حفظ إعداداتك.
 Couldn't start a worker thread: {e}	تعذّر بدء خيط عامل: {e}
 Couldn't start it.	تعذّر تشغيله.
 Coverage unknown	التغطية غير معروفة
@@ -987,6 +988,7 @@ Saved in	يُحفظ في
 Saves space: copies the program and code, and shares dependencies and media with the project. A shared file rewritten in place changes here too.	يوفّر المساحة: ينسخ البرنامج والشيفرة، ويشارك الاعتماديات والوسائط مع المشروع. وإذا أُعيدت كتابة ملف مشترك في مكانه، تغيّر هنا أيضًا.
 Say what you want	قل ما تريد
 Say what you want first.	قل ما تريد أولًا.
+This applies once you choose something to recreate above.	يسري هذا بعد أن تختار في الأعلى ما تريد إعادة إنشائه.
 Say what you want to make, or drop an app or file on the window to look inside it. Everything runs in Clean room mode unless you switch on Deep.	قل ما تريد صنعه، أو أفلت تطبيقًا أو ملفًا على النافذة لتنظر في داخله. يعمل كل شيء في وضع الغرفة النظيفة ما لم تشغّل الوضع المعمّق.
 Screenshot	لقطة شاشة
 Screenshot a page	التقط لقطة شاشة لصفحة
@@ -1192,6 +1194,7 @@ Use the projects folder	استخدام مجلد المشاريع
 Use this	استخدام هذا
 Use {name}	استخدام {name}
 Value flow	تدفّق القيم
+About	حول
 Version	الإصدار
 Waiting	في الانتظار
 Waiting for another build to finish: this one starts next.	في انتظار انتهاء بناء آخر: يبدأ هذا بعده.
@@ -1447,6 +1450,7 @@ Zoom	تكبير/تصغير
 Bring all to front	إحضار الكل إلى الأمام
 Drag to give the plan more or less room; double-click to reset	اسحب لمنح الخطة مساحة أكبر أو أصغر؛ انقر مرتين لإعادة الضبط
 Copy the message	نسخ الرسالة
+Copy the version	نسخ الإصدار
 Choose what the builder's approvals get	تحديد ما تلقاه طلبات الموافقة من وكيل البناء
 Reading the web	القراءة من الويب
 Other commands	أوامر أخرى
@@ -1493,3 +1497,5 @@ You're up to date.	لديك أحدث إصدار.
 Forget a website sign-in	نسيان تسجيل الدخول إلى موقع ويب
 Sign in to a website	تسجيل الدخول إلى موقع ويب
 Some shared files could not be hard-linked and were copied instead ({size}).	تعذّر إنشاء ارتباطات ثابتة لبعض الملفات المشتركة، فنُسخت بدلًا من ذلك ({size}).
+This server lists several chat models. Choose one:	يعرض هذا الخادم عدة نماذج محادثة. اختر واحدًا منها:
+Choose a model	اختيار نموذج

@@ -89,14 +89,14 @@ pub fn hero(app: &mut CraftApp, ui: &mut Ui, w: f32) {
             let picked = widgets::segmented(ui, &["Make my own version", "Work on my project", "Just look inside"], door, theme::ControlSize::Large);
             let fits = ui.available_width() >= mode_choice_width(ui);
             if fits {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| mode_choice(app, ui));
+                ui.with_layout(widgets::to_end(egui::Align::Center), |ui| mode_choice(app, ui));
             }
             (picked, fits)
         })
         .inner;
     if !fits {
         ui.add_space(theme::space::SM);
-        ui.horizontal(|ui| ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| mode_choice(app, ui)));
+        ui.horizontal(|ui| ui.with_layout(widgets::to_end(egui::Align::Center), |ui| mode_choice(app, ui)));
     }
     let d = &mut app.state.make;
     if let Some(i) = picked {

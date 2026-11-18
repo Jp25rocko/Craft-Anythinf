@@ -1602,6 +1602,7 @@ fn a_model_picked_from_a_servers_list_is_chosen_there_and_goes_with_its_address(
         delta: egui::vec2(0.0, -300.0),
         phase: egui::TouchPhase::Move,
         modifiers: egui::Modifiers::NONE,
+        source: egui::MouseWheelSource::Wheel,
     });
     h.run_steps(20);
     h.get_by_label("Choose a model").click();
