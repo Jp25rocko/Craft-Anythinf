@@ -1833,7 +1833,7 @@ Gaps found while using the app for real projects.
       UTF-8) loaded as defaults like a missing one, and the next save replaced it; one that couldn't
       be parsed was renamed aside with the rename's result ignored. Only "not found" is plain
       defaults now. A file that can't be understood (not TOML, not UTF-8) is set aside whole under
-      the first free name (`config.toml.broken`, `.broken.1`… up to 16). One that can't be read, or
+      the first free name (`config.toml.broken`, then `.broken.1` to `.broken.15`). One that can't be read, or
       can't be set aside, stays where it is, and the defaults standing in for it
       (`Settings::not_loaded`) refuse `save_to` and a deferred save, also after `settings_set`'s
       round trip. Tested on Windows with a file held without sharing; the Unix permission test
@@ -1846,9 +1846,13 @@ Gaps found while using the app for real projects.
       holding it) isn't tried again, so the whole session runs on defaults and refuses every save:
       try the read again for a short while before giving up
       — claimed: NicolasBohn, branch bugfix/r2.9-config-read-retry
-- [ ] A config.toml that is a link to a file that isn't there reads as "not found", so it loads as
-      plain defaults and the next save replaces the link; and the note on kept copies reads as if
-      their names went up to `.broken.16` (they stop at `.broken.15`)
+- [x] A config.toml that is a link to a file that isn't there read as "not found", so it loaded as
+      plain defaults and the next save replaced the link; and the note on kept copies read as if
+      their names went up to `.broken.16` (they stop at `.broken.15`). "Not found" is a first
+      start now only when nothing is at the path itself (`symlink_metadata`); a link without its
+      target loads as defaults that refuse to be saved, naming where it points, and a deferred
+      save isn't recovered over it. The test through a real link skips itself on a Windows account
+      that can't create links (as here), so that path ran only from what the system answers
       — claimed: hichang4u, branch bugfix/r2.9-config-link-no-target
 - [x] A website build has no `dev` or `start` script, since Craft Anything serves its built
       folder itself, so outside the app there was nothing to run (#1590): the builder writes

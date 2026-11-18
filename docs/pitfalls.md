@@ -893,6 +893,10 @@ result ignored. Only "not found" means there's nothing to lose. Defaults that st
 that is there carry that fact (`Settings::not_loaded`) and refuse to be saved, also through a
 serde round trip that would drop it (`with_setting`); a backup keeps every byte under a name
 nothing else has, and one that fails stops the save.
+And "not found" wasn't that either: reading a link whose target is missing answers "not found"
+too, so such a config.toml was a first start and the next save put a file where the link was. A
+read's error describes the end of the path it followed, not the path: before treating "not
+found" as "nothing to lose", look at the path itself without following it (`symlink_metadata`).
 
 **A save that changed memory first.** Adding an AI in the app put it in the session's settings,
 then the file write failed (on Windows, likely a virus scan holding config.toml), so the app showed
