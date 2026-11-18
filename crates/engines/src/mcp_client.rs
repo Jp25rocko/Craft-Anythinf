@@ -396,9 +396,9 @@ impl Http {
                 }
                 if matches!(e, ureq::Error::Protocol(_)) {
                     // These carry raw text from the answer, such as a malformed redirect target
-                    // with signed parameters.
+                    // with signed parameters. A send failure invalidates the cached session.
                     return ToolError::new(
-                        ErrorCode::GarbledOutput,
+                        ErrorCode::EngineMissing,
                         format!("The {} plugin sent an HTTP answer that couldn't be read, such as a malformed redirect.", self.name),
                     )
                     .with_remediation("Check its url in config.toml ([[plugins.mcp]]) and the server's redirects.");
@@ -1177,7 +1177,7 @@ mod tests {
     fn a_malformed_https_redirect_target_is_not_shown() {
         let (err, https_seen, http_seen) = https_redirect_to(|port| format!("http://127.0.0.1:{port}/m cp?sig={PRIVATE_SIG}"));
         assert_eq!((https_seen, http_seen), (1, 0));
-        assert_eq!(err.code, ErrorCode::GarbledOutput, "{err:?}");
+        assert_eq!(err.code, ErrorCode::EngineMissing, "a send failure must discard the cached client: {err:?}");
         assert!(err.message.contains("malformed redirect"), "{err:?}");
         assert!(!format!("{err:?}").contains(PRIVATE_SIG), "redirect target query leaked: {err:?}");
     }
