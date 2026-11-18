@@ -452,20 +452,21 @@ pub fn url_allowed(url: &str) -> bool {
     if auth.contains('@') {
         return false;
     }
+    let valid_port = |p: &str| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) && p.parse::<u16>().is_ok();
     if scheme.eq_ignore_ascii_case("https") {
         if let Some(after) = auth.strip_prefix('[') {
-            after.split_once(']').is_some_and(|(ip, tail)| {
-                ip.parse::<std::net::Ipv6Addr>().is_ok() && (tail.is_empty() || tail.strip_prefix(':').is_some_and(|p| p.parse::<u16>().is_ok()))
-            })
+            after
+                .split_once(']')
+                .is_some_and(|(ip, tail)| ip.parse::<std::net::Ipv6Addr>().is_ok() && (tail.is_empty() || tail.strip_prefix(':').is_some_and(valid_port)))
         } else {
             let (host, port) = match auth.split_once(':') {
                 Some((h, p)) => (h, Some(p)),
                 None => (auth, None),
             };
-            !host.is_empty() && port.is_none_or(|p| p.parse::<u16>().is_ok())
+            !host.is_empty() && !host.contains(['[', ']']) && port.is_none_or(valid_port)
         }
     } else if scheme.eq_ignore_ascii_case("http") {
-        craft_anything_platform::standin_server::host_is_loopback(auth, None)
+        !auth.contains('+') && craft_anything_platform::standin_server::host_is_loopback(auth, None)
     } else {
         false
     }
@@ -618,11 +619,13 @@ mod tests {
             "http://[::1].evil.example.com/mcp",
             "http://[::1/mcp",
             "http://[::1]:bad/mcp",
+            "http://[::1]:+9000/mcp",
             "http://[::1]:80:90/mcp",
             r"http://evil.example.com\@127.0.0.1/mcp",
             "http://user@127.0.0.1/mcp",
             "http://localhost:80:evil/mcp",
             "http://127.0.0.1:notaport/mcp",
+            "http://127.0.0.1:+8080/mcp",
             "http://127.0.0.1:/mcp",
             "http:///mcp",
             "https:///mcp",
@@ -631,11 +634,15 @@ mod tests {
             "https://user@mcp.example.com/mcp",
             "https://:443/mcp",
             "https://mcp.example.com:/mcp",
+            "https://mcp.example.com:+443/mcp",
             "https://mcp.example.com:notaport/mcp",
             "https://mcp.example.com:99999/mcp",
+            "https://evil[1]/mcp",
+            "https://mcp.example.com[not-ip]:443/mcp",
             "https://[not-ip]/mcp",
             "https://[::1].evil.example.com/mcp",
             "https://[::1]:bad/mcp",
+            "https://[::1]:+8443/mcp",
             "https://[::1/mcp",
             r"https://mcp.example.com\evil/mcp",
             "https://mcp example.com/mcp",
@@ -656,11 +663,35 @@ mod tests {
         let _ = server.join().unwrap();
     }
 
+    /// Drain an incoming HTTP/1.1 request (headers plus `Content-Length` body, bounded in bytes
+    /// and time) before replying so closing the socket never races unread `POST` bytes with a RST.
+    fn drain_http_request(stream: &mut impl std::io::Read) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 1024];
+        while buf.len() < 32 * 1024 && Instant::now() < deadline {
+            match stream.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    buf.extend_from_slice(&chunk[..n]);
+                    if let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let head = String::from_utf8_lossy(&buf[..end]);
+                        let len: usize =
+                            head.lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").and_then(|v| v.trim().parse().ok())).unwrap_or(0);
+                        if buf.len() >= end + 4 + len {
+                            break;
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    }
+
     /// A loopback HTTP server cannot redirect a request (with its headers and body) to a second
     /// HTTP endpoint.
     #[test]
     fn loopback_http_refuses_redirects_without_following() {
-        use std::io::Read;
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -676,8 +707,7 @@ mod tests {
                 if let Ok((mut s, _)) = target_listener.accept() {
                     s.set_nonblocking(false).unwrap();
                     let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
-                    let mut buf = [0u8; 2048];
-                    let _ = s.read(&mut buf);
+                    drain_http_request(&mut s);
                     seen_clone.fetch_add(1, Ordering::SeqCst);
                     let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
                 } else {
@@ -695,11 +725,12 @@ mod tests {
                 if let Ok((mut s, _)) = redirect_listener.accept() {
                     s.set_nonblocking(false).unwrap();
                     let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
-                    let mut buf = [0u8; 2048];
-                    let _ = s.read(&mut buf);
+                    let _ = s.set_write_timeout(Some(Duration::from_secs(2)));
+                    drain_http_request(&mut s);
                     let reply =
                         format!("HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{target_port}/steal\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
                     let _ = s.write_all(reply.as_bytes());
+                    let _ = s.flush();
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(5));
@@ -707,11 +738,12 @@ mod tests {
         });
 
         let secret_headers = BTreeMap::from([("X-Api-Key".to_string(), "sk-test".to_string())]);
-        let err = McpClient::connect("demo", &Server::Url(ServerUrl { url: redirect_url, headers: secret_headers }), Duration::from_secs(5)).err().unwrap();
+        let res = McpClient::connect("demo", &Server::Url(ServerUrl { url: redirect_url, headers: secret_headers }), Duration::from_secs(5));
         stop.store(true, Ordering::SeqCst);
         redirect_worker.join().unwrap();
         target_worker.join().unwrap();
 
+        let err = res.err().unwrap();
         assert_eq!(target_seen.load(Ordering::SeqCst), 0, "loopback HTTP redirect must not be followed");
         assert!(err.message.contains("302"), "{err:?}");
     }
@@ -720,7 +752,6 @@ mod tests {
     /// before opening the HTTP connection and omits the redirect target URI from the error.
     #[test]
     fn https_downgrade_redirect_is_refused_without_contacting_http() {
-        use std::io::Read;
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -751,8 +782,9 @@ mod tests {
         let http_worker = std::thread::spawn(move || {
             while !stop_http.load(Ordering::SeqCst) {
                 if let Ok((mut s, _)) = http_listener.accept() {
-                    let mut buf = [0u8; 1024];
-                    let _ = s.read(&mut buf);
+                    s.set_nonblocking(false).unwrap();
+                    let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
+                    drain_http_request(&mut s);
                     http_seen_clone.fetch_add(1, Ordering::SeqCst);
                     let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
                 } else {
@@ -775,15 +807,7 @@ mod tests {
                     let _ = socket.set_write_timeout(Some(Duration::from_secs(3)));
                     let conn = rustls::ServerConnection::new(server_cfg.clone()).unwrap();
                     let mut tls_stream = rustls::StreamOwned::new(conn, socket);
-                    let mut header = Vec::new();
-                    let mut b = [0u8; 1];
-                    while header.len() < 8192 && !header.ends_with(b"\r\n\r\n") {
-                        if matches!(tls_stream.read(&mut b), Ok(1)) {
-                            header.push(b[0]);
-                        } else {
-                            break;
-                        }
-                    }
+                    drain_http_request(&mut tls_stream);
                     https_seen_clone.fetch_add(1, Ordering::SeqCst);
                     let reply = format!(
                         "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{http_port}/mcp?sig={PRIVATE_SIG}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
@@ -802,12 +826,13 @@ mod tests {
         )
         .unwrap();
         transport.tls = Some(client_tls);
-        let err = McpClient::with_transport("secure", Box::new(transport), Duration::from_secs(5)).err().unwrap();
+        let res = McpClient::with_transport("secure", Box::new(transport), Duration::from_secs(5));
 
         stop.store(true, Ordering::SeqCst);
         https_worker.join().unwrap();
         http_worker.join().unwrap();
 
+        let err = res.err().unwrap();
         assert_eq!(https_seen.load(Ordering::SeqCst), 1);
         assert_eq!(http_seen.load(Ordering::SeqCst), 0, "downgrade redirect must never contact plain HTTP");
         assert!(err.message.contains("plain HTTP"), "{err:?}");
