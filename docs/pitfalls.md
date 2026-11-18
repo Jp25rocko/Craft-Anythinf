@@ -92,6 +92,18 @@ nonblocking mode on Windows, so the fixture read `WouldBlock` and closed a valid
 Set the accepted socket to blocking mode before applying bounded I/O timeouts; consume the
 complete request header before replying.
 
+**A test module hid later production code from a policy gate.** The source scan stopped at the
+first `cfg(test)`, and unreadable files looked empty. Inspect syntax for the actual test item,
+keep checking its production siblings and source directories (even one named `tests`), and report source failures. `cfg(not(test))` and
+`cfg(any(test, feature = "app"))` may contain production code; a cfg string containing "test"
+isn't enough to exempt it. The source-policy checks follow explicit imports and module files,
+not macro expansion, globs, re-exports or all Rust name resolution; compiler checks still matter.
+Hidden module directories are source too. Symlinked source directories fail visibly rather than
+being omitted or followed into cycles; ordinary Rust file links are read and checked. Git metadata
+stays out of the directory walk. Module-level declarations explicitly referencing a file
+include it even under an otherwise-exempt directory; discovery is cycle-safe and bounded to the
+workspace. Missing cfg-dependent files still require compiler validation.
+
 **A heartbeat sampled before shutdown raced a successful stop.** A child could write between
 the baseline read and `stop()`, failing the descendant cleanup test even when cleanup worked.
 Probe for exit instead of timing writes: the child holds a file lock the system releases only
@@ -162,6 +174,13 @@ program another thread was starting held a copy of the lock file until its exec 
 sign-out right after the reservation was dropped was refused as busy in about one full engine
 run in four, never alone. A non-blocking lock tries again for a moment (`lock_site`'s
 `LOCK_GRACE`) before calling something busy, and a lock test is run inside the full suite.
+
+**A test that passed only without the developer's `CARGO_TARGET_DIR`.** Since the program
+lookup reads `CARGO_TARGET_DIR`, four pin tests failed on a machine that exported it: a live check
+had left a real `snake` program in that shared folder, and the tests' project is also called snake.
+The product had the same fault: any same-named program there was taken for the project's. Run the
+engine tests with `CARGO_TARGET_DIR` set to a folder holding other builds, and a lookup in a
+shared folder needs proof that a file is this project's, not just its name.
 
 **A free port handed to another test.** For a negative TCP probe, a bound port stopped being
 ours as soon as its listener was dropped. Another fixture could acquire it before the probe.
@@ -551,6 +570,11 @@ but POSIX makes everything after `=` the header, so FreeBSD's `ps` printed one `
 ",ppid=" and every parent lookup came back empty. Give each column its own `-o` (`-o pid= -o ppid=`)
 when a header is renamed or blanked.
 
+**`cfg(unix)` tests assumed every Unix could capture a console program.** Two console-run tests
+from #1679 and #1702 failed every night on FreeBSD, whose capture was a stub that refused to run
+anything. A test gated on `unix` must only need what every Unix build has; FreeBSD now captures
+through pipes, as Windows does.
+
 ## Design
 
 **A source inventory limit came after expansion.** Taking five thousand names after collecting
@@ -761,6 +785,18 @@ session the person had left unfinished days before and went on editing another p
 an hour. When a program has a mode that must be avoided, give every call to it the same flag, not
 only the main one: list each command we run (`run`, `api`, `session delete`) and test each.
 
+**"Can it start here?" used for "is it a program?"** The study's search of a picked folder took
+the biggest file `outputs::is_program` accepted, which on Linux and macOS means no extension and an
+executable bit. A 1990s Windows game copied there has neither, so no program was found and
+Deep mode skipped Ghidra; the tests named their programs the local way on each system, so none had
+a Windows game on Linux. When a check answers one question, don't reuse it for a neighbouring one:
+studying a program and starting it are separate (`studies_as_program`), and test the other
+system's files on this one.
+The fix itself first missed one gate that starts it: runtime study's console runs checked the PE
+header but not the system, so a Windows console `.exe` would have been run on Linux (found in
+review). When a value starts reaching code it couldn't before, check every place that acts on it;
+every runtime start now asks `study::may_start`.
+
 **Keywords that only some code paths honour.** "…in Rust" picked Rust for apps but not for games, so
 a headless game rebuild stopped at once for want of Unity. It was found only by a live run. Run the
 real flow end to end after changing how requests are read, and add the case as a test.
@@ -857,6 +893,10 @@ result ignored. Only "not found" means there's nothing to lose. Defaults that st
 that is there carry that fact (`Settings::not_loaded`) and refuse to be saved, also through a
 serde round trip that would drop it (`with_setting`); a backup keeps every byte under a name
 nothing else has, and one that fails stops the save.
+And "not found" wasn't that either: reading a link whose target is missing answers "not found"
+too, so such a config.toml was a first start and the next save put a file where the link was. A
+read's error describes the end of the path it followed, not the path: before treating "not
+found" as "nothing to lose", look at the path itself without following it (`symlink_metadata`).
 
 **A save that changed memory first.** Adding an AI in the app put it in the session's settings,
 then the file write failed (on Windows, likely a virus scan holding config.toml), so the app showed

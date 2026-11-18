@@ -1,5 +1,6 @@
 # et: original Estonian UI translations. Licensed MIT OR Apache-2.0.
 # UTF-8: English source<TAB>translation. Keep placeholders and escapes intact.
+Default (its own settings)	Vaikimisi (oma seaded)
 OpenCode default	OpenCode'i vaikimisi
 Model default	Mudeli vaikimisi
 Thinking depth	Mõtlemise sügavus
@@ -304,6 +305,7 @@ Couldn't look through that folder.	Seda kausta ei õnnestunud läbi vaadata.
 Couldn't open it.	Seda ei õnnestunud avada.
 Couldn't open the folder.	Kausta ei õnnestunud avada.
 Couldn't open {}: {}	Ei õnnestunud avada {}: {}
+Couldn't save your settings.	Seadeid ei õnnestunud salvestada.
 Couldn't start a worker thread: {e}	Töölõime ei õnnestunud käivitada: {e}
 Couldn't start it.	Seda ei õnnestunud käivitada.
 Coverage unknown	Katvus teadmata
@@ -1493,3 +1495,5 @@ You're up to date.	Sul on uusim versioon.
 Forget a website sign-in	Unusta veebisaidi sisselogimine
 Sign in to a website	Logi veebisaidile sisse
 Some shared files could not be hard-linked and were copied instead ({size}).	Mõnda jagatud faili ei saanud kõvasti linkida ja need kopeeriti ({size}).
+This server lists several chat models. Choose one:	See server pakub mitut vestlusmudelit. Vali üks:
+Choose a model	Vali mudel

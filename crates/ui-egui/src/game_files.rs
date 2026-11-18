@@ -9,7 +9,7 @@ use crate::{CraftApp, Pick, icons, widgets};
 use craft_anything_engine::evidence::ToolError;
 use egui::{RichText, Sense, Ui, Vec2};
 use serde_json::{Value, json};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Rows shown at once in an archive (the filter narrows the rest).
 const SHOWN: usize = 400;
@@ -341,8 +341,26 @@ pub fn suggested_name(app: &CraftApp) -> String {
     app.state.game.pending.as_ref().map_or_else(|| "picture.png".to_string(), |p| p.name.clone())
 }
 
+/// A finished look belongs to the game folder or archive still on screen.
+fn still_showing(app: &CraftApp, tool: &str, params: &Value) -> bool {
+    let Some(asked) = params.get("path").and_then(Value::as_str) else { return false };
+    let asked = craft_anything_engine::workspace::normalized(Path::new(asked));
+    match tool {
+        "game_archives_list" | "core_target_triage" => {
+            app.state.game.folder.as_ref().is_some_and(|shown| craft_anything_engine::workspace::normalized(shown) == asked)
+        }
+        "game_pak_list" | "game_unity_list" | "game_iostore_list" | "game_unity_bundle_list" => {
+            app.state.game.open.as_deref().is_some_and(|shown| craft_anything_engine::workspace::normalized(Path::new(shown)) == asked)
+        }
+        _ => true,
+    }
+}
+
 /// A game tool finished.
-pub fn tool_done(app: &mut CraftApp, tool: &str, result: Result<Value, ToolError>) {
+pub fn tool_done(app: &mut CraftApp, tool: &str, params: &Value, result: Result<Value, ToolError>) {
+    if !still_showing(app, tool, params) {
+        return;
+    }
     let g = &mut app.state.game;
     match (tool, result) {
         ("game_archives_list", Ok(v)) => {
@@ -368,5 +386,82 @@ pub fn tool_done(app: &mut CraftApp, tool: &str, result: Result<Value, ToolError
             g.loading = false;
             app.toast(e.for_people(), true);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::demo;
+    use craft_anything_engine::Mode;
+    use serde_json::json;
+    use std::path::PathBuf;
+
+    fn app() -> CraftApp {
+        demo::app(demo::engine(Mode::Beginner, true))
+    }
+
+    fn two_folders() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let d = tempfile::tempdir().unwrap();
+        let a = d.path().join("a");
+        let b = d.path().join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        (d, a, b)
+    }
+
+    #[test]
+    fn a_look_for_another_game_folder_is_ignored() {
+        let (_d, a, b) = two_folders();
+        let mut app = app();
+        app.state.game.folder = Some(b.clone());
+        app.state.game.looking = true;
+        tool_done(
+            &mut app,
+            "game_archives_list",
+            &json!({"path": a.display().to_string()}),
+            Ok(json!({"folder": a.display().to_string(), "archives": [{"path": "a.pak"}]})),
+        );
+        assert!(app.state.game.archives.is_empty(), "an old look doesn't fill the new game: {:?}", app.state.game.archives);
+        assert!(app.state.game.looking, "the new game's look is still running");
+        tool_done(&mut app, "core_target_triage", &json!({"path": a.display().to_string()}), Ok(json!({"game": {"engine": "Unreal"}})));
+        assert!(app.state.game.profile.is_none(), "an old profile isn't the new game's");
+
+        tool_done(
+            &mut app,
+            "game_archives_list",
+            &json!({"path": b.display().to_string()}),
+            Ok(json!({"folder": b.display().to_string(), "archives": [{"path": "b.pak"}]})),
+        );
+        assert_eq!(app.state.game.archives.len(), 1);
+        assert!(!app.state.game.looking);
+        tool_done(&mut app, "core_target_triage", &json!({"path": b.display().to_string()}), Ok(json!({"game": {"engine": "Unity"}})));
+        assert_eq!(app.state.game.profile.as_ref().unwrap()["game"]["engine"], "Unity");
+    }
+
+    #[test]
+    fn a_listing_for_another_archive_is_ignored() {
+        let (_d, a, b) = two_folders();
+        let mut app = app();
+        let open = b.join("b.pak");
+        app.state.game.open = Some(open.display().to_string());
+        app.state.game.loading = true;
+        tool_done(&mut app, "game_pak_list", &json!({"path": a.join("a.pak").display().to_string()}), Ok(json!({"files": [{"path": "A.uasset"}]})));
+        assert!(app.state.game.rows.is_empty(), "an old archive's rows don't fill the new one");
+        assert!(app.state.game.loading, "the new archive is still loading");
+        tool_done(&mut app, "game_pak_list", &json!({"path": open.display().to_string()}), Ok(json!({"files": [{"path": "B.uasset"}]})));
+        assert_eq!(app.state.game.rows.len(), 1);
+        assert!(!app.state.game.loading);
+    }
+
+    #[test]
+    fn a_look_error_for_another_game_folder_is_not_shown() {
+        let (_d, a, b) = two_folders();
+        let mut app = app();
+        app.state.game.folder = Some(b.clone());
+        tool_done(&mut app, "game_archives_list", &json!({"path": a.display().to_string()}), Err(ToolError::invalid("no")));
+        assert!(app.state.toasts.is_empty(), "an old folder's error isn't the new game's: {:?}", app.state.toasts);
+        tool_done(&mut app, "game_archives_list", &json!({"path": b.display().to_string()}), Err(ToolError::invalid("no")));
+        assert_eq!(app.state.toasts.len(), 1, "the shown game's error is said");
     }
 }
