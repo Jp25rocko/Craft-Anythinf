@@ -910,7 +910,8 @@ fn ai(app: &mut CraftApp, ui: &mut Ui) {
     for d in detected.into_iter().filter(|d| crate::detect_tabs::tab_of(d) == tab) {
         let configured = app.backends.iter().any(|b| b.name == d.suggestion.name);
         let ssh = d.suggestion.ssh_host.as_deref().map(str::trim).filter(|h| !h.is_empty());
-        let options = agent_options(&d.suggestion, app.state.remote_commands.get(&d.suggestion.name).map(String::as_str));
+        let saved = app.backend_options.get(&d.suggestion.name);
+        let options = add_options(&d.suggestion, configured, saved, app.state.remote_commands.get(&d.suggestion.name).map(String::as_str));
         widgets::panel(&t).show(ui, |ui| {
             ui.set_width(ui.available_width());
             // The buttons first, in the top right corner, then the name and reason wrapped in the
@@ -947,11 +948,11 @@ fn ai(app: &mut CraftApp, ui: &mut Ui) {
             // before adding, so the check runs that command instead of the usual one.
             if let Some(host) = ssh
                 && d.suggestion.kind == BackendKind::AgentCli
-                && !configured
             {
                 ui.add_space(theme::space::XS);
                 let usual = craft_anything_ai::cli_agents::program_for(&d.suggestion.model);
-                let command = app.state.remote_commands.entry(d.suggestion.name.clone()).or_default();
+                let saved = app.backend_options.get(&d.suggestion.name).and_then(|options| options.command.clone());
+                let command = app.state.remote_commands.entry(d.suggestion.name.clone()).or_insert_with(|| saved.unwrap_or_default());
                 ui.add(
                     egui::TextEdit::singleline(command)
                         .hint_text(trf("{program} (or its path on {host})", &[("program", &usual), ("host", host)]))
@@ -1326,10 +1327,18 @@ pub(crate) fn settings_not_saved(e: &craft_anything_engine::evidence::ToolError)
     said
 }
 
-/// The options an SSH agent suggestion is added with: the command typed for it, else its usual
-/// program. Other suggestions have no options of their own.
-fn agent_options(config: &craft_anything_ai::BackendConfig, command: Option<&str>) -> BackendOptions {
+/// The options a suggestion is added with. An SSH agent uses the command typed for it (else its
+/// usual program); another account of a configured one keeps that backend's saved options, and a
+/// command typed for it wins. Other suggestions have no options of their own.
+fn add_options(config: &craft_anything_ai::BackendConfig, configured: bool, saved: Option<&BackendOptions>, command: Option<&str>) -> BackendOptions {
     let command = command.map(str::trim).filter(|c| !c.is_empty()).map(str::to_string);
+    if configured {
+        let mut options = saved.cloned().unwrap_or_default();
+        if let Some(command) = command {
+            options.command = Some(command);
+        }
+        return options;
+    }
     let ssh = config.ssh_host.as_deref().is_some_and(|h| !h.trim().is_empty());
     if config.kind == BackendKind::AgentCli && ssh { BackendOptions { command, ..Default::default() } } else { BackendOptions::default() }
 }
@@ -1340,7 +1349,8 @@ mod tests {
     use crate::{Done, builders::AgentModelPicker, demo, jobs::Finished};
     use craft_anything_ai::{BackendConfig, BackendKind};
 
-    /// The command typed for an SSH agent is what gets added and checked; a local agent has none.
+    /// The command typed for an SSH agent is what gets added and checked; another account keeps the
+    /// configured command, and a local agent has none.
     #[test]
     fn an_ssh_agent_adds_with_the_command_typed_for_it() {
         let ssh = BackendConfig {
@@ -1351,11 +1361,14 @@ mod tests {
             ssh_host: Some("box".into()),
             enabled: true,
         };
-        assert_eq!(agent_options(&ssh, Some(" /opt/claude ")).command.as_deref(), Some("/opt/claude"));
-        assert!(agent_options(&ssh, None).command.is_none());
-        assert!(agent_options(&ssh, Some("  ")).command.is_none(), "blank is the usual program");
+        assert_eq!(add_options(&ssh, false, None, Some(" /opt/claude ")).command.as_deref(), Some("/opt/claude"));
+        assert!(add_options(&ssh, false, None, None).command.is_none());
+        assert!(add_options(&ssh, false, None, Some("  ")).command.is_none(), "blank is the usual program");
+        let saved = BackendOptions { command: Some("/saved/claude".into()), ..Default::default() };
+        assert_eq!(add_options(&ssh, true, Some(&saved), None).command.as_deref(), Some("/saved/claude"), "another account keeps the command");
+        assert_eq!(add_options(&ssh, true, Some(&saved), Some("/typed")).command.as_deref(), Some("/typed"), "a typed one wins");
         let local = BackendConfig { ssh_host: None, ..ssh.clone() };
-        assert!(agent_options(&local, Some("/x")).command.is_none(), "a local agent has no remote command");
+        assert!(add_options(&local, false, None, Some("/x")).command.is_none(), "a local agent has no remote command");
     }
 
     /// Settings that couldn't be loaded say so where the person is looking, with the file's name.

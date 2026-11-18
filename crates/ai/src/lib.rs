@@ -749,7 +749,7 @@ impl AiHub {
     /// stand in for ssh.
     fn add_backend_with_check(
         &self,
-        entry: BackendEntry,
+        mut entry: BackendEntry,
         key: Option<String>,
         cancel: &CancelToken,
         mut check: impl FnMut(&str, &str, &CancelToken) -> Result<(), ToolError>,
@@ -758,24 +758,32 @@ impl AiHub {
         if entry.config.name.trim().is_empty() {
             return Err(ToolError::invalid("A backend needs a name."));
         }
+        // The host is saved as it is checked: surrounding spaces would make two names for one
+        // host, and a blank one means this computer.
+        if let Some(host) = entry.config.ssh_host.as_deref() {
+            let host = host.trim();
+            entry.config.ssh_host = (!host.is_empty()).then(|| host.to_string());
+        }
         // A host from ~/.ssh/config is a suggestion, not proof that it has the agent (#62): an
         // agent added for one is checked there first, and nothing is saved when it's absent.
         // `options.command` (a remote path or wrapper) is the program checked when one is given.
         if entry.config.kind == BackendKind::AgentCli
-            && let Some(host) = entry.config.ssh_host.as_deref().map(str::trim).filter(|h| !h.is_empty())
+            && let Some(host) = entry.config.ssh_host.as_deref()
         {
             let program = crate::cli_agents::program_of(&entry.config, &entry.options)?;
             check(host, &program, cancel)?;
         }
-        // A Connect job cancelled during the check leaves nothing behind.
+        // A Connect job cancelled during the check leaves nothing behind. After this, the save is
+        // completed even if the job is cancelled meanwhile: a key and its configuration go
+        // together, never one without the other.
         cancel.check()?;
         let mut cfg = self.config_to_change()?;
+        cancel.check()?;
         if let Some(k) = key.filter(|k| !k.trim().is_empty()) {
             self.keys.set(&entry.config.name, k.trim())?;
         }
         cfg.upsert(entry);
         give_session_id(&mut cfg);
-        cancel.check()?;
         self.save_config(&cfg)
     }
 

@@ -196,17 +196,23 @@ fn an_ssh_agent_is_checked_before_it_is_added() {
     assert!(refused.is_err());
     assert_eq!(asked, [("pi5".to_string(), "claude".to_string())], "the host and its program are checked");
     assert!(h.config().backends.is_empty(), "a refused agent saves nothing");
-    // A command given for that host is the one checked, so the default name need not be there.
+    // A command given for that host is the one checked, so the default name need not be there;
+    // surrounding spaces on the host are not saved as another name for it.
     let mut custom = None;
+    let mut seen_host = None;
+    let mut custom_config = config("Claude on pi5");
+    custom_config.ssh_host = Some(" pi5 ".into());
     let with_command = BackendOptions { command: Some("/opt/claude/bin/claude".into()), ..Default::default() };
-    let added =
-        h.add_backend_with_check(BackendEntry { config: config("Claude on pi5"), options: with_command }, None, &CancelToken::default(), |_, program, _| {
-            custom = Some(program.to_string());
-            Ok(())
-        });
+    let added = h.add_backend_with_check(BackendEntry { config: custom_config, options: with_command }, None, &CancelToken::default(), |host, program, _| {
+        seen_host = Some(host.to_string());
+        custom = Some(program.to_string());
+        Ok(())
+    });
     assert!(added.is_ok());
+    assert_eq!(seen_host.as_deref(), Some("pi5"), "the host is checked as saved");
     assert_eq!(custom.as_deref(), Some("/opt/claude/bin/claude"));
-    assert!(h.config().backends.iter().any(|b| b.config.name == "Claude on pi5"));
+    let saved = h.config().backends.into_iter().find(|b| b.config.name == "Claude on pi5").expect("the added agent");
+    assert_eq!(saved.config.ssh_host.as_deref(), Some("pi5"), "the trimmed host is saved");
     // An agent on this computer is not checked on a host.
     let local = BackendConfig { name: "Local".into(), kind: BackendKind::AgentCli, model: "claude-code".into(), base_url: None, ssh_host: None, enabled: true };
     let mut checked = false;
@@ -232,12 +238,13 @@ fn a_cancelled_connect_does_not_save_an_ssh_agent() {
     };
     let stop = CancelToken::default();
     let inside = stop.clone();
-    let result = h.add_backend_with_check(BackendEntry { config, options: BackendOptions::default() }, None, &stop, move |_, _, _| {
+    let result = h.add_backend_with_check(BackendEntry { config, options: BackendOptions::default() }, Some("sk-test".into()), &stop, move |_, _, _| {
         inside.cancel();
         Ok(())
     });
     assert_eq!(result.unwrap_err().code, ErrorCode::Cancelled);
     assert!(h.config().backends.is_empty(), "a cancelled check saves nothing");
+    assert!(h.keys.get("Claude on pi5").is_none(), "a cancelled check stores no key");
 }
 
 /// The remote check's exit status becomes a message a person can act on, with the exact command.
