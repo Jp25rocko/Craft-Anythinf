@@ -1371,10 +1371,13 @@ fn apple_dylibs_resolve(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, 
     }
     // Programs in a folder that couldn't be listed were never looked for.
     lims.extend(unlisted_limitation(&walked.unlisted));
-    let coverage = if walked.unlisted.is_empty() {
+    // A walk cut by any limit, or by a folder it couldn't list, may have missed a program, so the
+    // trace isn't complete. Partial counts the images whose loading was attempted (`images`, which
+    // records failures too); `loaded` also holds a dependency queued before `max_images` stopped it.
+    let coverage = if !walked.truncated && walked.unlisted.is_empty() {
         Coverage::complete(t.loaded.len() as u64)
     } else {
-        Coverage { status: CoverageStatus::Partial, examined: Some(t.loaded.len() as u64), total: None, next_offset: None }
+        Coverage { status: CoverageStatus::Partial, examined: Some(t.images.len() as u64), total: None, next_offset: None }
     };
     let name = bundle.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let ev = builder(

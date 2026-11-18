@@ -135,6 +135,17 @@ pub(crate) fn unlisted_note(unlisted: &[(String, String)]) -> Option<String> {
     ))
 }
 
+/// The error for a walk that found nothing to work on: `what` alone when the walk saw every folder,
+/// or with the folders it couldn't list and their reasons, since what was looked for may be in them.
+pub(crate) fn nothing_found_error(what: String, unlisted: &[(String, String)]) -> ToolError {
+    match unlisted_note(unlisted) {
+        None => ToolError::invalid(what),
+        Some(note) => {
+            ToolError::invalid(format!("{what}; {note}")).with_remediation("Make those folders readable (or close what holds them open), then try again.")
+        }
+    }
+}
+
 /// A limitation naming the `.gitignore` files whose rules were skipped, if any.
 pub(crate) fn skipped_gitignores_limitation(skipped: &[(String, String)]) -> Option<Limitation> {
     if skipped.is_empty() {

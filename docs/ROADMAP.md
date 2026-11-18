@@ -2215,11 +2215,19 @@ Owner: open · Status: in progress
       short" without naming the folder or the reason. `app_source_import`, `js_source_bundle_compare`
       (a source folder given as a path), `apple_nib_decode`, `apple_dylibs_resolve`,
       `managed_reconstruction_check` and `js_sources_restore` now carry an `unlisted_folders`
-      limitation (or note) with each folder and the system's reason, and partial coverage; a folder
-      below the root that can't be listed at all marks the walk as cut short too. Tested on Windows
-      with a folder held without sharing; the Unix path (no permission) runs in CI
-- [ ] `js_sources_restore` names a folder it couldn't list in its notes, but no test makes one: add
-      the case with a folder held without sharing (Windows) or without permission (Unix)
+      limitation (or note) naming the first five such folders with the system's reason, and how many
+      more there are (it isn't a full list), and partial coverage; a folder below the root that can't
+      be listed at all marks the walk as cut short too. When nothing is found to work on (no `.cs`
+      files, no scripts), the error names the folders that couldn't be listed and says to make them
+      readable; inputs with the same folder name are told apart (`dist (input 2)`), and
+      `apple_dylibs_resolve` is partial whenever its walk was cut. Tested on Windows with a folder
+      held without sharing; the Unix path (no permission) runs in CI
+- [ ] `managed_reconstruction_check` stops reading `.cs` files at its file or size budget and says so
+      in a note, but its coverage stays complete, so members declared only in an unread file read as
+      missing in a complete check (CodeRabbit on #2106): carry the cut into coverage, apart from the
+      unlisted-folder limitation
+- [ ] `js_sources_restore` keeps every unlisted folder of every input in memory to name five of them:
+      keep the count and the first five (CodeRabbit on #2106)
       — claimed: hichang4u, branch bugfix/r3.11-walk-gaps-named
       — claimed: hichang4u, branch bugfix/r3.11-walk-entry-reads
 - [x] `core_archives_compare` reports `rows_capped` and a partial-coverage limitation when the

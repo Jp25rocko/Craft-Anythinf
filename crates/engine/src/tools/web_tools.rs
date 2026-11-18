@@ -3,8 +3,8 @@
 //! minified bundles.
 
 use super::artifact_tools::{
-    WALK_CUT_NOTE, WalkOptions, abs_path, create_absent_dir, env, read_capped, rel_to, resolve_evidence_input, unlisted_limitation, unlisted_note,
-    unlisted_under, walk_dir, write_new_file,
+    WALK_CUT_NOTE, WalkOptions, abs_path, create_absent_dir, env, nothing_found_error, read_capped, rel_to, resolve_evidence_input, unlisted_limitation,
+    unlisted_note, unlisted_under, walk_dir, write_new_file,
 };
 use crate::tool::{Ctx, Effects, Requires, ToolOutput, ToolSpec, Toolset, parse_params, schema_of};
 use craft_anything_analysis::web_har::{HarOptions, inspect_har};
@@ -417,10 +417,18 @@ fn collect_scripts(ctx: &Ctx<'_>, roots: &[String], max_files: usize) -> Result<
     let mut out = Vec::new();
     let mut notes = Vec::new();
     let mut unlisted = Vec::new();
+    // Two inputs can share a folder name (`/first/dist`, `/second/dist`): what is said about one of
+    // them then names which input it is, so the person can tell where to look.
+    let base_of = |path: &Path| path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "input".into());
+    let mut named = std::collections::HashMap::<String, usize>::new();
     for r in roots {
+        *named.entry(base_of(Path::new(r))).or_default() += 1;
+    }
+    for (index, r) in roots.iter().enumerate() {
         let path = abs_path(r, "path")?;
         let meta = std::fs::metadata(&path).map_err(|e| ToolError::io(path.display(), e))?;
-        let base = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "input".into());
+        let base = base_of(&path);
+        let label = if named.get(&base).copied().unwrap_or(0) > 1 { format!("{base} (input {})", index + 1) } else { base.clone() };
         if meta.is_dir() {
             let skip = |rel: &str| rel.ends_with("node_modules");
             let w = walk_dir(
@@ -429,9 +437,9 @@ fn collect_scripts(ctx: &Ctx<'_>, roots: &[String], max_files: usize) -> Result<
                 &ctx.cancel,
             )?;
             if w.truncated {
-                notes.push(format!("{base}: {WALK_CUT_NOTE}"));
+                notes.push(format!("{label}: {WALK_CUT_NOTE}"));
             }
-            unlisted.extend(unlisted_under(&base, w.unlisted));
+            unlisted.extend(unlisted_under(&label, w.unlisted));
             for f in w.files.into_iter().filter(|f| craft_anything_analysis::js_app::is_script(&f.rel)) {
                 out.push((format!("{base}/{}", f.rel), f.abs));
             }
@@ -461,7 +469,8 @@ fn js_sources_restore(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, To
     roots.extend(p.additional_paths.iter().cloned());
     let (inputs, mut notes, unlisted) = collect_scripts(ctx, &roots, p.max_files.max(1))?;
     if inputs.is_empty() {
-        return Err(ToolError::invalid("no JavaScript files found in the inputs"));
+        // Nothing is created yet: the output folder comes after this.
+        return Err(nothing_found_error("no JavaScript files found in the inputs".into(), &unlisted));
     }
     let out = create_absent_dir(&p.output_directory)?;
     let level = match p.rewrite_level {
@@ -717,6 +726,52 @@ mod tests {
         assert_eq!(Some(&notes[1]), unlisted_message(&cut).as_ref());
         let manifest: Value = serde_json::from_slice(&std::fs::read(out.join("manifest.json")).unwrap()).unwrap();
         assert_eq!(manifest["notes"], cut["result"]["notes"]);
+    }
+
+    /// "No JavaScript files found" when the only scripts are in a folder that can't be listed sent
+    /// the person looking for files that are there: the error names the folder, and nothing is made.
+    #[test]
+    fn recover_with_nothing_found_names_the_folders_it_couldnt_list() {
+        use super::super::artifact_tools::walk_testing::close;
+        let dir = tempfile::tempdir().unwrap();
+        let dist = dir.path().join("dist");
+        std::fs::create_dir_all(dist.join("closed")).unwrap();
+        std::fs::write(dist.join("closed/app.js"), "console.log(1);\n").unwrap();
+        let e = Engine::new(crate::testing::session());
+        let out = dir.path().join("out");
+        let Some(closed) = close(&dist.join("closed")) else { return };
+        let refused = call(&e, "js_sources_restore", json!({"path": dist, "output_directory": out}));
+        drop(closed);
+        let err = refused.unwrap_err();
+        assert!(err.message.starts_with("no JavaScript files found") && err.message.contains("dist/closed (") && err.message.contains("os error"), "{err:?}");
+        assert!(err.remediation.is_some() && !out.exists(), "{err:?}");
+    }
+
+    /// Two inputs with the same folder name (`first/dist`, `second/dist`) were both "dist" in the
+    /// notes, so a folder that couldn't be listed didn't say which input it was in.
+    #[test]
+    fn recover_names_which_of_two_same_named_inputs_a_folder_is_in() {
+        use super::super::artifact_tools::walk_testing::close;
+        let dir = tempfile::tempdir().unwrap();
+        let (first, second) = (dir.path().join("first").join("dist"), dir.path().join("second").join("dist"));
+        for d in [&first, &second] {
+            std::fs::create_dir_all(d.join("closed")).unwrap();
+            std::fs::write(d.join("app.js"), "console.log(1);\n").unwrap();
+        }
+        let e = Engine::new(crate::testing::session());
+        let Some(closed) = close(&second.join("closed")) else { return };
+        let cut = call(&e, "js_sources_restore", json!({"path": first, "additional_paths": [second], "output_directory": dir.path().join("out")}));
+        drop(closed);
+        let notes = cut.unwrap()["result"]["notes"].to_string();
+        assert!(notes.contains("dist (input 2)/closed (") && !notes.contains("dist (input 1)/closed"), "{notes}");
+        // A name only one input has is kept as it was.
+        let lone = dir.path().join("lone");
+        std::fs::create_dir_all(lone.join("closed")).unwrap();
+        std::fs::write(lone.join("app.js"), "console.log(1);\n").unwrap();
+        let Some(closed) = close(&lone.join("closed")) else { return };
+        let cut = call(&e, "js_sources_restore", json!({"path": lone, "output_directory": dir.path().join("out2")}));
+        drop(closed);
+        assert!(cut.unwrap()["result"]["notes"].to_string().contains("lone/closed ("));
     }
 
     #[test]

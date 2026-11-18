@@ -3,7 +3,7 @@
 //! verification against native exports, checking decompiled C# against metadata, and an
 //! application graph.
 
-use super::artifact_tools::{WALK_CUT_NOTE, WalkOptions, is_path_input, resolve_evidence_input, unlisted_limitation, walk_dir};
+use super::artifact_tools::{WALK_CUT_NOTE, WalkOptions, is_path_input, nothing_found_error, resolve_evidence_input, unlisted_limitation, walk_dir};
 use super::native_common::{page, spec};
 use super::static_input::{Input, builder, format_err, load, load_path};
 use crate::tool::{Ctx, Effects, Requires, ToolOutput, ToolSpec, Toolset, parse_params, schema_of};
@@ -814,7 +814,7 @@ fn read_sources(p: &ImportParams, ctx: &Ctx<'_>) -> Result<Sources, ToolError> {
                 notes.push(WALK_CUT_NOTE.into());
             }
             if out.is_empty() {
-                return Err(ToolError::invalid(format!("no .cs files under {sp}")));
+                return Err(nothing_found_error(format!("no .cs files under {sp}"), &walked.unlisted));
             }
             Ok((out, notes, walked.unlisted))
         }
@@ -1163,6 +1163,31 @@ mod tests {
         assert_ne!(cut["result"]["counts"]["missing"], 0, "what the closed folder declares reads as missing: {cut}");
         assert_names_unlisted(&cut, "closed");
         assert!(cut["limitations"].as_array().unwrap().iter().any(|l| l["code"] == "source_read"), "{cut}");
+    }
+
+    /// When the only source is in a folder that can't be listed, "no .cs files" alone sent the
+    /// person looking for files that are there: the error names the folder and why.
+    #[test]
+    fn no_source_found_names_the_folders_that_couldnt_be_listed() {
+        use super::super::artifact_tools::walk_testing::close;
+        let e = Engine::new(crate::testing::session());
+        let asm = craft_anything_testkit::temp_file("Sample.dll", &fx::managed_assembly(1));
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("closed")).unwrap();
+        std::fs::write(dir.path().join("closed/Calc.cs"), fx::RECONSTRUCTION_CS).unwrap();
+        let run = || e.call("managed_reconstruction_check", json!({"members": asm, "source_path": dir.path()}), crate::CallOptions::new(crate::Caller::Mcp));
+        let Some(closed) = close(&dir.path().join("closed")) else { return };
+        let refused = run();
+        drop(closed);
+        let err = refused.unwrap_err();
+        assert!(err.message.starts_with("no .cs files under") && err.message.contains("closed (") && err.message.contains("os error"), "{err:?}");
+        assert!(err.remediation.as_deref().is_some_and(|r| r.contains("readable")), "{err:?}");
+        // A folder that has no source at all, seen whole, says only that.
+        let empty = tempfile::tempdir().unwrap();
+        let err = e
+            .call("managed_reconstruction_check", json!({"members": asm, "source_path": empty.path()}), crate::CallOptions::new(crate::Caller::Mcp))
+            .unwrap_err();
+        assert!(err.message.starts_with("no .cs files under") && !err.message.contains("couldn't be listed") && err.remediation.is_none(), "{err:?}");
     }
 
     #[test]
