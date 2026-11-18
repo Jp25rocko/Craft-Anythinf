@@ -2180,7 +2180,7 @@ Owner: open · Status: in progress
       kept every folder and link, so a tree of empty folders or links, or one huge folder, had no
       limit. `WalkLimits` bounds the entries examined and the path bytes held (from the file limit,
       4,000,000 entries at most); one folder is listed through a bounded first-names-in-order
-      selection, so a cut listing is the same every time; the walk stops at the first file or entry
+      selection (later read only as far as the limits, below); the walk stops at the first file or entry
       over a limit; cancel is checked while a folder is read. An ASAR's `.unpacked` folder and
       `source_paths` folders say when their listing was cut. The tree-of-links test skipped itself
       on the Windows account used (it can't create links); it needs a run on Linux or macOS
@@ -2190,10 +2190,21 @@ Owner: open · Status: in progress
       — claimed: AlexJoaquimPereira, branch bugfix/r3.11-gitignore-read-cap
 - [ ] The walk's limits are chosen, not measured (4,000,000 entries at most, 256 path bytes an
       entry): time a walk at the ceiling on a real disk and measure what it holds
-- [ ] That walk still reads a folder to its end to pick its first names in order (100,000 entries
-      read for a limit of 2), and skips entries that fail to read in silence: 64 failures in a row
-      come back as an empty folder listed in full. Read a folder only as far as the limits go, and
-      report entries that couldn't be read; the `source_paths` note names only two of the limits
+- [x] That walk still read a folder to its end to pick its first names in order (100,000 entries
+      read for a limit of 2), and skipped entries that failed to read in silence: 64 failures in a
+      row came back as an empty folder listed in full. A folder is now read only as far as the
+      walk's entry and path-byte limits go, and one entry more that says the folder holds more, so
+      a whole walk takes at most its entry limit plus one from the system; cancel is looked at
+      before every read. A cut listing holds the entries the system returned first, sorted by name
+      (no longer the folder's first names in order, so the same cut every time only where the
+      system lists an unchanged folder in the same order). Entries that couldn't be read, while
+      listing or when looked at, mark the walk as cut short and put their folder in `unlisted` with
+      a count and the first reason (`.` for the root). The notes that named only the file-count or
+      depth limit name every limit. An entry that is there but can't be looked at was run with a
+      made-up name only, not with a real permission failure
+- [ ] Five calls of `walk_dir` (`apple_tools` twice, `application_tools`, `managed_tools`,
+      `web_tools`) read only `truncated`, so a folder with unreadable entries reads there as "cut
+      short" without naming the folder or the reason: pass `unlisted` on as `core_archive_show` does
       — claimed: hichang4u, branch bugfix/r3.11-walk-entry-reads
 - [x] `core_archives_compare` reports `rows_capped` and a partial-coverage limitation when the
       added, removed, changed or moved lists are cut at `max_rows`, while its counts stay complete.
