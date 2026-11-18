@@ -1130,6 +1130,15 @@ Owner: open · Status: in progress
       — claimed: Agapenordev, branch bugfix/r2.2-opencode-v1-refusal
 - [ ] When the `opencode` on PATH is 1.x and an OpenCode 2 is installed elsewhere, find and use
       the 2.x one, and confirm a live OpenCode 2 build end to end (#1111 stays open until then)
+- [x] Pi (`pi --mode json`) as a coding agent: detection, `pi --offline --list-models` model and
+      thinking discovery (`off` to `max`), `--session` resume, read-only question/analysis tool
+      limits, and JSONL stream parsing for text deltas, tools, usage/cost, retries and missing
+      sessions. Verified with unit tests and live `pi` 1.5.2 checks (`ai test Pi`, `ai model Pi`,
+      and `--mode json` stdin run); a full live `rebuild` and SSH runs were not run yet
+      — claimed: Nghiathan13, branch feature/r2.2-pi-agent
+- [ ] Verify a full live `rebuild` and SSH model discovery/execution with Pi, and pass Craft
+      Anything's MCP server per run if Pi adds an ephemeral MCP flag/env without overriding
+      `PI_CODING_AGENT_DIR`
 
 "Found on this computer" has to mean "can do the job". Today only Claude Code gets everything.
 **Every builder gets the same tools:**
