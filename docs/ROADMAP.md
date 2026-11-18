@@ -2213,6 +2213,7 @@ Owner: open · Status: in progress
 - [ ] Five calls of `walk_dir` (`apple_tools` twice, `application_tools`, `managed_tools`,
       `web_tools`) read only `truncated`, so a folder with unreadable entries reads there as "cut
       short" without naming the folder or the reason: pass `unlisted` on as `core_archive_show` does
+      — claimed: hichang4u, branch bugfix/r3.11-walk-gaps-named
       — claimed: hichang4u, branch bugfix/r3.11-walk-entry-reads
 - [x] `core_archives_compare` reports `rows_capped` and a partial-coverage limitation when the
       added, removed, changed or moved lists are cut at `max_rows`, while its counts stay complete.
