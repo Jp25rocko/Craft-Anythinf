@@ -1359,8 +1359,12 @@ impl Worker {
                     // Our own loop asks before tools that need consent. The Build tools are the
                     // builder's job (they apply the approval policy themselves); nothing else runs.
                     AgentEvent::ConsentNeeded { call_id, tool, .. } => {
-                        let build = self.engine.registry().get(tool).is_some_and(|s| s.toolset == craft_anything_engine::Toolset::Build);
-                        agent.answer_consent(call_id, build);
+                        if self.engine.registry().get(tool).is_some_and(|s| s.toolset == craft_anything_engine::Toolset::Build) {
+                            agent.answer_consent(call_id, true);
+                        } else {
+                            // Nobody was asked: say so, or the model invents a reason (#1938).
+                            agent.refuse_consent(call_id, &format!("{tool}: {BUILD_REFUSES_CONSENT}."));
+                        }
                     }
                     // Decided on the tool's own id (its CLI and `mcp__…__` names included).
                     AgentEvent::ToolStarted { tool, .. }
@@ -1514,6 +1518,11 @@ fn run_outcome(result: Result<Result<String, ToolError>, Box<dyn std::any::Any +
         }
     }
 }
+
+/// What a builder on an API model is told when it calls a tool that needs consent outside the
+/// Build tools: the build refuses those itself, without asking the person (#1938).
+pub const BUILD_REFUSES_CONSENT: &str = "Nobody was asked: a build doesn't run tools that need the person's consent, so this one didn't run. \
+For a plugin's tool, the plugin's `consent` setting in the person's config.toml decides whether it needs consent";
 
 /// Checks in a row that may find the build not working before the run stops and asks for a new
 /// request. Each "Try again" used to start another `max_rounds` of checks, with nothing counting
