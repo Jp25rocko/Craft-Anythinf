@@ -925,6 +925,10 @@ Owner: open · Status: in progress
       it carried on, with a core and gigabytes of memory, until the app closed. Pausing still
       leaves it running, so a paused build loses nothing
       — claimed: justinjohn0306, branch `bugfix/r1.5-stop-analysis-for-deleted-project`
+- [ ] Validate MCP HTTP plugin URLs against parsed `http::Uri` authorities and shared loopback
+      checks (`host_is_loopback`), trim stored `ServerUrl` whitespace, and refuse HTTPS-to-HTTP
+      downgrade redirects and loopback HTTP redirects (`crates/engines/src/mcp_client.rs`).
+      — claimed: Plastic-time, branch bugfix/r1.5-mcp-http-cleartext-guard
 - [ ] More pins once their hashes are checked against the publisher: Chromium (no published
       checksums found yet), Rizin for Linux (the tar.xz unpacks to ~800 MB, so it needs streaming
       extraction) and macOS (a .pkg)
