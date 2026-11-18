@@ -2210,9 +2210,14 @@ Owner: open · Status: in progress
       a count and the first reason (`.` for the root). The notes that named only the file-count or
       depth limit name every limit. An entry that is there but can't be looked at was run with a
       made-up name only, not with a real permission failure
-- [ ] Five calls of `walk_dir` (`apple_tools` twice, `application_tools`, `managed_tools`,
-      `web_tools`) read only `truncated`, so a folder with unreadable entries reads there as "cut
-      short" without naming the folder or the reason: pass `unlisted` on as `core_archive_show` does
+- [x] Five calls of `walk_dir` (`apple_tools` twice, `application_tools`, `managed_tools`,
+      `web_tools`) read only `truncated`, so a folder with unreadable entries read there as "cut
+      short" without naming the folder or the reason. `app_source_import`, `js_source_bundle_compare`
+      (a source folder given as a path), `apple_nib_decode`, `apple_dylibs_resolve`,
+      `managed_reconstruction_check` and `js_sources_restore` now carry an `unlisted_folders`
+      limitation (or note) with each folder and the system's reason, and partial coverage; a folder
+      below the root that can't be listed at all marks the walk as cut short too. Tested on Windows
+      with a folder held without sharing; the Unix path (no permission) runs in CI
       — claimed: hichang4u, branch bugfix/r3.11-walk-gaps-named
       — claimed: hichang4u, branch bugfix/r3.11-walk-entry-reads
 - [x] `core_archives_compare` reports `rows_capped` and a partial-coverage limitation when the

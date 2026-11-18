@@ -3,7 +3,8 @@
 //! minified bundles.
 
 use super::artifact_tools::{
-    WALK_CUT_NOTE, WalkOptions, abs_path, create_absent_dir, env, read_capped, rel_to, resolve_evidence_input, walk_dir, write_new_file,
+    WALK_CUT_NOTE, WalkOptions, abs_path, create_absent_dir, env, read_capped, rel_to, resolve_evidence_input, unlisted_limitation, unlisted_note,
+    unlisted_under, walk_dir, write_new_file,
 };
 use crate::tool::{Ctx, Effects, Requires, ToolOutput, ToolSpec, Toolset, parse_params, schema_of};
 use craft_anything_analysis::web_har::{HarOptions, inspect_har};
@@ -409,9 +410,13 @@ fn default_recover_limit() -> usize {
 
 type Scripts = Vec<(String, PathBuf)>;
 
-fn collect_scripts(ctx: &Ctx<'_>, roots: &[String], max_files: usize) -> Result<(Scripts, Vec<String>), ToolError> {
+/// The scripts under `roots`, notes about listings cut short, and the folders that couldn't be
+/// listed in full as (path from its root's name, reason).
+#[allow(clippy::type_complexity)]
+fn collect_scripts(ctx: &Ctx<'_>, roots: &[String], max_files: usize) -> Result<(Scripts, Vec<String>, Vec<(String, String)>), ToolError> {
     let mut out = Vec::new();
     let mut notes = Vec::new();
+    let mut unlisted = Vec::new();
     for r in roots {
         let path = abs_path(r, "path")?;
         let meta = std::fs::metadata(&path).map_err(|e| ToolError::io(path.display(), e))?;
@@ -426,6 +431,7 @@ fn collect_scripts(ctx: &Ctx<'_>, roots: &[String], max_files: usize) -> Result<
             if w.truncated {
                 notes.push(format!("{base}: {WALK_CUT_NOTE}"));
             }
+            unlisted.extend(unlisted_under(&base, w.unlisted));
             for f in w.files.into_iter().filter(|f| craft_anything_analysis::js_app::is_script(&f.rel)) {
                 out.push((format!("{base}/{}", f.rel), f.abs));
             }
@@ -437,7 +443,9 @@ fn collect_scripts(ctx: &Ctx<'_>, roots: &[String], max_files: usize) -> Result<
             break;
         }
     }
-    Ok((out, notes))
+    // The manifest keeps the notes: say there which folders, and why.
+    notes.extend(unlisted_note(&unlisted));
+    Ok((out, notes, unlisted))
 }
 
 /// Recover pretty-printed files, bundle modules and embedded source-map originals into a new
@@ -451,7 +459,7 @@ fn js_sources_restore(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, To
     }
     let mut roots = vec![p.path.clone()];
     roots.extend(p.additional_paths.iter().cloned());
-    let (inputs, mut notes) = collect_scripts(ctx, &roots, p.max_files.max(1))?;
+    let (inputs, mut notes, unlisted) = collect_scripts(ctx, &roots, p.max_files.max(1))?;
     if inputs.is_empty() {
         return Err(ToolError::invalid("no JavaScript files found in the inputs"));
     }
@@ -568,7 +576,7 @@ fn js_sources_restore(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, To
         out.display()
     );
     let mut coverage = Coverage::page(page.len() as u64, outputs.len() as u64, p.offset as u64);
-    if originals_truncated {
+    if originals_truncated || !unlisted.is_empty() {
         coverage.status = CoverageStatus::Partial;
     }
     let mut b = EvidenceBuilder::new("js_sources_restore", Subject { kind: "javascript".into(), sha256: None, name: Some(p.path.clone()) }, env(ctx))
@@ -583,6 +591,10 @@ fn js_sources_restore(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, To
             "source_map_recovery_truncated",
             "Some original sources were left out after the recovery manifest's path-byte or entry limit was reached.",
         ));
+    }
+    // Scripts in a folder that couldn't be listed were never recovered.
+    if let Some(gap) = unlisted_limitation(&unlisted) {
+        b = b.limitation(gap);
     }
     let ev = b.coverage(coverage).location(Location::new("path", out.display().to_string())).build()?;
     Ok(ToolOutput::evidence(ev))
@@ -675,6 +687,36 @@ mod tests {
         let out_full = dir.path().join("full");
         let r_full = call(&e, "js_sources_restore", json!({"path": dist, "output_directory": out_full, "max_files": 3})).unwrap();
         assert_eq!(r_full["result"]["notes"], json!([]));
+    }
+
+    /// A folder of scripts that couldn't be listed was "cut short" in the notes, with neither its
+    /// name nor the reason, in a recovery whose coverage said nothing was left out.
+    #[test]
+    fn recover_names_a_folder_it_couldnt_list() {
+        use super::super::artifact_tools::walk_testing::{assert_names_unlisted, close, unlisted_message};
+        let dir = tempfile::tempdir().unwrap();
+        let dist = dir.path().join("dist");
+        std::fs::create_dir_all(dist.join("closed")).unwrap();
+        std::fs::write(dist.join("app.js"), "console.log(1);\n").unwrap();
+        std::fs::write(dist.join("closed/more.js"), "console.log(2);\n").unwrap();
+        let e = Engine::new(crate::testing::session());
+        let whole = call(&e, "js_sources_restore", json!({"path": dist, "output_directory": dir.path().join("whole")})).unwrap();
+        assert_eq!((whole["result"]["notes"].clone(), whole["result"]["inputs"].as_array().unwrap().len(), unlisted_message(&whole)), (json!([]), 2, None));
+
+        let Some(closed) = close(&dist.join("closed")) else { return };
+        let out = dir.path().join("cut");
+        let cut = call(&e, "js_sources_restore", json!({"path": dist, "output_directory": out}));
+        drop(closed);
+        let cut = cut.unwrap();
+        assert_eq!(cut["result"]["inputs"].as_array().unwrap().len(), 1, "{cut}");
+        assert_names_unlisted(&cut, "dist/closed");
+        // The notes, which the manifest keeps, say it too: first that the listing was cut, then where and why.
+        let notes: Vec<String> = cut["result"]["notes"].as_array().unwrap().iter().map(|n| n.as_str().unwrap().to_string()).collect();
+        assert_eq!(notes.len(), 2, "{notes:?}");
+        assert!(notes[0].starts_with("dist: the folder listing was cut short"), "{notes:?}");
+        assert_eq!(Some(&notes[1]), unlisted_message(&cut).as_ref());
+        let manifest: Value = serde_json::from_slice(&std::fs::read(out.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(manifest["notes"], cut["result"]["notes"]);
     }
 
     #[test]
