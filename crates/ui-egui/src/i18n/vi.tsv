@@ -1499,3 +1499,9 @@ Sign in to a website	Đăng nhập vào một trang web
 Some shared files could not be hard-linked and were copied instead ({size}).	Một số tệp chia sẻ không thể tạo liên kết cứng nên đã được sao chép ({size}).
 This server lists several chat models. Choose one:	Máy chủ này có nhiều mô hình trò chuyện. Hãy chọn một:
 Choose a model	Chọn mô hình
+Auto	Tự động
+Sees pictures	Xem được hình
+Yes	Có
+No	Không
+Whether a builder on this AI is shown pictures: the original's screenshots, your pictures of it, and the check's pictures of the build. Auto: what its server says; a model it says nothing about isn't shown any.	Trình xây dựng trên AI này có được xem hình hay không: ảnh chụp bản gốc, hình của bạn về bản gốc và ảnh mà bước kiểm tra chụp bản dựng. Tự động: theo những gì máy chủ của nó cho biết; mô hình mà máy chủ không nói gì thì không được xem hình.
+Set whether an AI sees pictures	Đặt việc AI có xem được hình hay không
