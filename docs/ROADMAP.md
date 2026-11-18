@@ -1842,9 +1842,12 @@ Gaps found while using the app for real projects.
 - [x] When config.toml wasn't loaded (`Settings::not_loaded`), the app says so at startup where
       the person is looking, with the file's name and why, and that nothing is saved over it
       (`settings_ui::not_loaded_warning`); English only for now, like the builder notice
-- [ ] A settings save the app refuses (config.toml wasn't loaded) says so in a toast in English only,
-      whatever the UI language, and leaves out the engine's remediation: lead with a translated
-      line and show what to do
+- [x] A settings save the app refused (config.toml wasn't loaded) said so in a toast in English
+      only, whatever the UI language, and left out the engine's remediation. The toast now leads
+      with "Couldn't save your settings." in the UI's language, then the engine's message and
+      what to do (`settings_ui::settings_not_saved`). The engine's own message is still English
+- [ ] The engine's messages about settings (why config.toml wasn't loaded, why a save was
+      refused) are English in every UI language: give them typed parts the UI can translate
       — claimed: hichang4u, branch bugfix/r2.9-settings-save-toast
 - [x] A config.toml that can't be read for a moment at startup (a virus scan or another program
       holding it) isn't tried again, so the whole session runs on defaults and refuses every save:

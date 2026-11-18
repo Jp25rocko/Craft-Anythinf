@@ -338,6 +338,7 @@ Couldn't look through that folder.	იმ საქაღალდის და�
 Couldn't open it.	გახსნა ვერ მოხერხდა.
 Couldn't open the folder.	საქაღალდის გახსნა ვერ მოხერხდა.
 Couldn't open {}: {}	{}-ის გახსნა ვერ მოხერხდა: {}
+Couldn't save your settings.	პარამეტრების შენახვა ვერ მოხერხდა.
 Couldn't start a worker thread: {e}	სამუშაო ნაკადის გაშვება ვერ მოხერხდა: {e}
 Couldn't start it.	გაშვება ვერ მოხერხდა.
 Coverage unknown	დაფარვა უცნობია

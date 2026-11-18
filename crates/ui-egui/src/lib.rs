@@ -882,7 +882,7 @@ impl CraftApp {
             // by an older settings snapshot. This runs on the worker, never the UI thread.
             let session = engine.session();
             session.label("Save settings");
-            session.settings.save().map_err(|e| e.message)?;
+            session.settings.save().map_err(|e| settings_ui::settings_not_saved(&e))?;
             Ok(Done::Nothing)
         }));
     }

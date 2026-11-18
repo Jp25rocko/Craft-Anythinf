@@ -305,6 +305,7 @@ Couldn't look through that folder.	เข้าไปดูโฟลเดอร
 Couldn't open it.	เปิดไม่ได้
 Couldn't open the folder.	เปิดโฟลเดอร์ไม่ได้
 Couldn't open {}: {}	เปิด {} ไม่ได้: {}
+Couldn't save your settings.	บันทึกการตั้งค่าไม่ได้
 Couldn't start a worker thread: {e}	เริ่ม worker thread ไม่ได้: {e}
 Couldn't start it.	เริ่มไม่ได้
 Coverage unknown	ไม่ทราบความครอบคลุม

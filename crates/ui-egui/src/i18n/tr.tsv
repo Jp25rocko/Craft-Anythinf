@@ -305,6 +305,7 @@ Couldn't look through that folder.	O klasöre bakılamadı.
 Couldn't open it.	Açılamadı.
 Couldn't open the folder.	Klasör açılamadı.
 Couldn't open {}: {}	{} açılamadı: {}
+Couldn't save your settings.	Ayarlar kaydedilemedi.
 Couldn't start a worker thread: {e}	İşçi iş parçacığı başlatılamadı: {e}
 Couldn't start it.	Başlatılamadı.
 Coverage unknown	Kapsam bilinmiyor

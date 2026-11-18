@@ -149,6 +149,7 @@ Couldn't attach the pictures:	画像を添付できませんでした:
 Couldn't look through that folder.	そのフォルダを調べられませんでした。
 Couldn't open it.	開けませんでした。
 Couldn't open the folder.	フォルダを開けませんでした。
+Couldn't save your settings.	設定を保存できませんでした。
 Couldn't start it.	起動できませんでした。
 Coverage unknown	確認範囲は不明
 Craft Anything can't build with {engine}, so Unity is the closest match.	Craft Anything は {engine} でビルドできないため、最も近い選択肢として Unity を使います。

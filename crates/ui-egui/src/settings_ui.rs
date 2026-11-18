@@ -1233,6 +1233,18 @@ pub(crate) fn not_loaded_warning(settings: &craft_anything_engine::Settings) -> 
     Some(format!("{why}. Until that's fixed, Craft Anything uses its default settings and won't save over it."))
 }
 
+/// What a settings save that failed says: a line in the person's language first, then what the
+/// engine said and what to do about it. The engine's message is English; its remediation is the
+/// part that tells the person how to get their settings saved again, so it is never left out.
+pub(crate) fn settings_not_saved(e: &craft_anything_engine::evidence::ToolError) -> String {
+    let mut said = format!("{} {}", tr("Couldn't save your settings."), e.message);
+    if let Some(fix) = e.remediation.as_deref().filter(|f| !f.trim().is_empty()) {
+        said.push(' ');
+        said.push_str(fix);
+    }
+    said
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1249,6 +1261,27 @@ mod tests {
         let said = not_loaded_warning(&standing_in).unwrap();
         assert!(said.contains("config.toml") && said.contains("access denied"), "{said}");
         assert!(said.contains("won't save over it"), "{said}");
+    }
+
+    /// A refused save was shown as the engine's English message alone, without what to do: it
+    /// leads with a translated line now, and keeps the remediation.
+    #[test]
+    fn a_refused_settings_save_says_so_with_what_to_do() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::create_dir(&path).unwrap(); // Something in config.toml's place that can't be read.
+        let standing_in = craft_anything_engine::Settings::load_from(&path);
+        let e = standing_in.save_to(&path).unwrap_err();
+        let fix = e.remediation.clone().unwrap();
+        let said = settings_not_saved(&e);
+        assert!(said.starts_with(&tr("Couldn't save your settings.")), "{said}");
+        assert!(said.contains(&e.message) && said.ends_with(&fix), "{said}");
+        // No remediation: the line and the message, with nothing dangling after them.
+        let bare = craft_anything_engine::evidence::ToolError::invalid("disk full");
+        assert_eq!(settings_not_saved(&bare), format!("{} disk full", tr("Couldn't save your settings.")));
+        // Korean, the language this was found in, has the line.
+        let ko = crate::i18n::LANGUAGES.iter().find(|l| l.code == "ko").unwrap();
+        assert!(ko.source.contains("Couldn't save your settings.\t설정을 저장하지 못했습니다."));
     }
 
     #[test]

@@ -350,6 +350,7 @@ Plugin removed.	Plugin retiré.
 Plugins read. Their new tools are offered from the next start.	Plugins lus. Leurs nouveaux outils seront proposés au prochain démarrage.
 Some plugins couldn't be read:	Certains plugins n'ont pas pu être lus :
 Couldn't open the folder.	Impossible d'ouvrir le dossier.
+Couldn't save your settings.	Impossible d'enregistrer vos réglages.
 Part of the app got stuck, so it was stopped and the rest carried on. Your work is kept.	Une partie de l'application s'est bloquée ; elle a été arrêtée et le reste a continué. Votre travail est conservé.
 Part of the app is stuck. Restarting clears it, and your work is kept.	Une partie de l'application est bloquée. Redémarrer règle le problème, et votre travail est conservé.
 Open log	Ouvrir le journal

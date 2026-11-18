@@ -305,6 +305,7 @@ Couldn't look through that folder.	Não foi possível examinar essa pasta.
 Couldn't open it.	Não foi possível abrir.
 Couldn't open the folder.	Não foi possível abrir a pasta.
 Couldn't open {}: {}	Não foi possível abrir {}: {}
+Couldn't save your settings.	Não foi possível salvar as configurações.
 Couldn't start a worker thread: {e}	Não foi possível iniciar uma thread de trabalho: {e}
 Couldn't start it.	Não foi possível iniciar.
 Coverage unknown	Cobertura desconhecida

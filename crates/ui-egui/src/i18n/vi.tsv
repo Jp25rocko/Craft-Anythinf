@@ -305,6 +305,7 @@ Couldn't look through that folder.	Không thể duyệt thư mục đó.
 Couldn't open it.	Không thể mở nó.
 Couldn't open the folder.	Không thể mở thư mục.
 Couldn't open {}: {}	Không thể mở {}: {}
+Couldn't save your settings.	Không thể lưu cài đặt.
 Couldn't start a worker thread: {e}	Không thể khởi động luồng xử lý: {e}
 Couldn't start it.	Không thể khởi động nó.
 Coverage unknown	Chưa rõ mức bao phủ

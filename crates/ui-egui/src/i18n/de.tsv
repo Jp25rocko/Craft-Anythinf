@@ -305,6 +305,7 @@ Couldn't look through that folder.	Dieser Ordner konnte nicht durchsucht werden.
 Couldn't open it.	Konnte nicht geöffnet werden.
 Couldn't open the folder.	Der Ordner konnte nicht geöffnet werden.
 Couldn't open {}: {}	{} konnte nicht geöffnet werden: {}
+Couldn't save your settings.	Die Einstellungen konnten nicht gespeichert werden.
 Couldn't start a worker thread: {e}	Ein Arbeits-Thread konnte nicht gestartet werden: {e}
 Couldn't start it.	Konnte nicht gestartet werden.
 Coverage unknown	Abdeckung unbekannt

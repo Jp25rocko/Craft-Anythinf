@@ -305,6 +305,7 @@ Couldn't look through that folder.	無法檢視該資料夾。
 Couldn't open it.	無法開啟。
 Couldn't open the folder.	無法開啟資料夾。
 Couldn't open {}: {}	無法開啟 {}：{}
+Couldn't save your settings.	無法儲存設定。
 Couldn't start a worker thread: {e}	無法啟動工作執行緒：{e}
 Couldn't start it.	無法啟動。
 Coverage unknown	涵蓋範圍未知

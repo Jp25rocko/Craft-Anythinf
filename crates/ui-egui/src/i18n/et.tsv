@@ -305,6 +305,7 @@ Couldn't look through that folder.	Seda kausta ei õnnestunud läbi vaadata.
 Couldn't open it.	Seda ei õnnestunud avada.
 Couldn't open the folder.	Kausta ei õnnestunud avada.
 Couldn't open {}: {}	Ei õnnestunud avada {}: {}
+Couldn't save your settings.	Seadeid ei õnnestunud salvestada.
 Couldn't start a worker thread: {e}	Töölõime ei õnnestunud käivitada: {e}
 Couldn't start it.	Seda ei õnnestunud käivitada.
 Coverage unknown	Katvus teadmata
