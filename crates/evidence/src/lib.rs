@@ -302,24 +302,33 @@ pub fn find_result_key<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
 
 /// The lists a result holds, by the name [`find_result_key`] reaches them with, and their
 /// lengths. A name that reaches something other than a list first (`changed` as a count) is
-/// left out. At most 64 names.
+/// left out and does not count toward the cap. Names are taken a level at a time, so top-level
+/// lists come before nested ones. At most 64 names.
 pub fn result_lists(result: &Value) -> std::collections::BTreeMap<String, usize> {
-    fn names<'a>(v: &'a Value, depth: usize, out: &mut std::collections::BTreeSet<&'a str>) {
-        if depth > RESULT_KEY_DEPTH {
-            return;
-        }
-        if let Value::Object(m) = v {
+    let mut out = std::collections::BTreeMap::new();
+    let mut tried = std::collections::BTreeSet::new();
+    let mut level = vec![result];
+    for _ in 0..=RESULT_KEY_DEPTH {
+        let mut next = Vec::new();
+        for m in level.iter().filter_map(|v| v.as_object()) {
             for (k, x) in m {
-                if x.is_array() && out.len() < MAX_LISTED {
-                    out.insert(k);
+                if x.is_array()
+                    && tried.insert(k.as_str())
+                    && let Some(list) = find_result_key(result, k).and_then(Value::as_array)
+                {
+                    out.insert(k.clone(), list.len());
+                    if out.len() == MAX_LISTED {
+                        return out;
+                    }
                 }
-                names(x, depth + 1, out);
+                if x.is_object() {
+                    next.push(x);
+                }
             }
         }
+        level = next;
     }
-    let mut found = std::collections::BTreeSet::new();
-    names(result, 0, &mut found);
-    found.into_iter().filter_map(|k| find_result_key(result, k).and_then(Value::as_array).map(|a| (k.to_string(), a.len()))).collect()
+    out
 }
 
 /// Builds an [`Evidence`] and computes its id.
@@ -477,6 +486,68 @@ mod tests {
         assert_eq!(result_lists(&deep).keys().collect::<Vec<_>>(), vec!["here"]);
         let many: serde_json::Map<String, Value> = (0..100).map(|i| (format!("l{i:03}"), serde_json::json!([]))).collect();
         assert_eq!(result_lists(&Value::Object(many)).len(), MAX_LISTED);
+    }
+
+    /// Names shadowed by scalar counts or earlier non-array fields must not consume the 64-list
+    /// cap and hide real pageable lists that appear later in the object.
+    #[test]
+    fn shadowed_arrays_do_not_exhaust_the_list_cap() {
+        let mut root = serde_json::Map::new();
+        root.insert("a_rows".into(), serde_json::json!([1]));
+        let mut groups = serde_json::Map::new();
+        for i in 0..70 {
+            let k = format!("c{i:02}");
+            root.insert(k.clone(), serde_json::json!(i));
+            groups.insert(k, serde_json::json!([i]));
+        }
+        root.insert("groups".into(), Value::Object(groups));
+        root.insert("z_rows".into(), serde_json::json!([10, 20, 30]));
+
+        let lists = result_lists(&Value::Object(root));
+        assert_eq!(lists.into_iter().collect::<Vec<_>>(), vec![("a_rows".to_string(), 1), ("z_rows".to_string(), 3)]);
+
+        // Sibling shadowing: scalars under `"a"` shadow same-named arrays under `"b"`, leaving `"c.kept"` visible.
+        let mut a = serde_json::Map::new();
+        let mut b = serde_json::Map::new();
+        for i in 0..70 {
+            let k = format!("s{i:02}");
+            a.insert(k.clone(), serde_json::json!("not-a-list"));
+            b.insert(k, serde_json::json!([1, 2]));
+        }
+        let sib = serde_json::json!({"a": a, "b": b, "c": {"kept": [42]}});
+        assert_eq!(result_lists(&sib).into_iter().collect::<Vec<_>>(), vec![("kept".to_string(), 1)]);
+    }
+
+    /// Top-level and shallower lists take precedence over deeper nested sub-lists when a record
+    /// holds more than `MAX_LISTED` arrays, while lengths still match `find_result_key`.
+    #[test]
+    fn shallower_lists_precede_deeper_sublists_at_cap() {
+        let mut deep_sub = serde_json::Map::new();
+        for i in 0..70 {
+            deep_sub.insert(format!("n{i:02}"), serde_json::json!([]));
+        }
+        let v = serde_json::json!({
+            "a_nested": {"inner": deep_sub},
+            "b_group": {"imports": [6]},
+            "sections": [1, 2],
+            "symbols": [3, 4, 5],
+        });
+        let lists = result_lists(&v);
+        assert_eq!(lists.len(), MAX_LISTED);
+        assert_eq!(lists.get("sections"), Some(&2));
+        assert_eq!(lists.get("symbols"), Some(&3));
+        assert_eq!(lists.get("imports"), Some(&1));
+        assert!(lists.contains_key("n00") && lists.contains_key("n60"));
+        assert!(!lists.contains_key("n61"));
+
+        // When two depths share an array name, the reported length matches what `find_result_key` reaches.
+        let shared = serde_json::json!({
+            "a": {"inner": {"dup": [10, 20, 30]}},
+            "b": {"dup": [99]},
+        });
+        let reached_len = find_result_key(&shared, "dup").and_then(Value::as_array).unwrap().len();
+        assert_eq!(result_lists(&shared).get("dup"), Some(&reached_len));
+        assert!(result_lists(&serde_json::json!([1, 2, 3])).is_empty());
     }
 
     #[test]
