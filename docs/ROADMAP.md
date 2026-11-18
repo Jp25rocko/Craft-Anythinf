@@ -1038,7 +1038,7 @@ Owner: open · Status: in progress
       document functions touched by the OpenCode model-selection changes.
 - [x] Integrate the five-level `Effort` type from #395 for agent variants, and share a strict
       disk-based selection save between the hub and headless tools, preserving unrelated edits.
-- [ ] Settings → AI offers no model choice for Codex, so its model can only be set by editing
+- [x] Settings → AI offers no model choice for Codex, so its model can only be set by editing
       config.toml (#2109): offer Codex's own listed models (`codex debug models`) and its default
       — claimed: justinjohn0306, branch bugfix/r2.2-codex-model-picker
 - [x] Rebase onto main after #395's squash merge, preserve extra model arguments without a saved
