@@ -1235,6 +1235,8 @@ Owner: open · Status: in progress
       — claimed: Plastic-time, branch bugfix/r2.2-yaml-mapping-key-boundaries
 - [x] Report dedicated `ActionKind::Invalid` uninstall diagnostics and remediations when a config blocks `setup::uninstall` (unremovable flow/escaped entries, malformed syntax, invalid UTF-8, or I/O errors), and distinguish invalid UTF-8 from permission errors across `plan`, `doctor`, and `uninstall`.
       — claimed: Plastic-time, branch bugfix/r2.2-uninstall-blocking-diagnostics
+- [x] Keep each config read error's own advice (a folder at the config path, invalid UTF-8, the I/O error itself), advise fixing a blocked config where it is, and print each uninstall blocker's reason and fix in the CLI.
+      — claimed: Plastic-time, branch bugfix/r2.2-uninstall-blocker-advice
 - [ ] See whether Hermes still fails on 0.3.0 (#460: the fix its `fixed` label names was already in
       0.3.0 when it was filed, and it gives no version)
 

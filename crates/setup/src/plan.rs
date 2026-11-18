@@ -97,24 +97,45 @@ pub fn default_command() -> Result<Vec<String>, ToolError> {
 /// Why reading a client config file failed before syntax parsing.
 pub(crate) enum ReadFail {
     InvalidUtf8,
-    Io(String),
+    /// The path names a folder.
+    NotAFile,
+    Io(std::io::Error),
 }
 
-impl std::fmt::Display for ReadFail {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl ReadFail {
+    /// `Can't read <path>: <why>`.
+    pub(crate) fn reason(&self, path: &Path) -> String {
+        let why = match self {
+            ReadFail::InvalidUtf8 => "the file is not valid UTF-8".to_string(),
+            ReadFail::NotAFile => "it is a folder, not a config file".to_string(),
+            ReadFail::Io(e) => e.to_string(),
+        };
+        format!("Can't read {}: {why}", path.display())
+    }
+
+    /// What to do, ending with `then` (such as "run uninstall again"). The file is repaired where
+    /// it is: moving it aside would also take the other servers it lists out of use.
+    pub(crate) fn fix(&self, path: &Path, then: &str) -> String {
+        let p = path.display();
         match self {
-            ReadFail::InvalidUtf8 => f.write_str("the file is not valid UTF-8"),
-            ReadFail::Io(e) => f.write_str(e),
+            ReadFail::InvalidUtf8 => format!("Back up {p} and save it as UTF-8 where it is, then {then}."),
+            ReadFail::NotAFile => format!("{p} must be a config file, not a folder. Move the folder elsewhere, then {then}."),
+            ReadFail::Io(e) if e.kind() == std::io::ErrorKind::PermissionDenied => format!("Check {p}'s permissions, then {then}."),
+            ReadFail::Io(_) => format!("Make sure {p} can be read, then {then}."),
         }
     }
 }
 
 /// Read `path` as UTF-8 text, returning `Ok(None)` when the file does not exist.
 pub(crate) fn read_text(path: &Path) -> Result<Option<String>, ReadFail> {
+    // Windows reports reading a folder as access denied, so folders are told apart first.
+    if std::fs::metadata(path).is_ok_and(|m| m.is_dir()) {
+        return Err(ReadFail::NotAFile);
+    }
     match std::fs::read(path) {
         Ok(b) => String::from_utf8(b).map(Some).map_err(|_| ReadFail::InvalidUtf8),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(ReadFail::Io(e.to_string())),
+        Err(e) => Err(ReadFail::Io(e)),
     }
 }
 
@@ -157,16 +178,10 @@ pub fn inspect_client(c: &Client, command: &[String]) -> Action {
     let desired = c.desired_entry(command);
     let text = match read_text(&c.config) {
         Ok(t) => t,
-        Err(ReadFail::InvalidUtf8) => {
+        Err(e) => {
             a.action = ActionKind::Invalid;
-            a.reason = Some(format!("Can't read {}: the file is not valid UTF-8", c.config.display()));
-            a.remediation = Some(format!("Save {} as UTF-8 (or move it aside), then run setup again.", c.config.display()));
-            return a;
-        }
-        Err(ReadFail::Io(e)) => {
-            a.action = ActionKind::Invalid;
-            a.reason = Some(format!("Can't read {}: {e}", c.config.display()));
-            a.remediation = Some("Check the file's permissions.".into());
+            a.reason = Some(e.reason(&c.config));
+            a.remediation = Some(e.fix(&c.config, "run setup again"));
             return a;
         }
     };
@@ -402,7 +417,7 @@ pub(crate) fn apply_with(plan: &Plan, write: Writer<'_>) -> ApplyReport {
 /// Write one file. On error, the flag says whether the file may have been changed.
 fn write_one(a: &Action, c: &Client, new: &str, write: Writer<'_>) -> Result<(), (ToolError, bool)> {
     // The file must not have changed since the plan was made.
-    let now = read_text(&a.path).map_err(|e| (ToolError::new(ErrorCode::FileError, format!("Can't read {}: {e}", a.path.display())), false))?;
+    let now = read_text(&a.path).map_err(|e| (ToolError::new(ErrorCode::FileError, e.reason(&a.path)), false))?;
     if now != a.old_text {
         return Err((
             ToolError::new(ErrorCode::FileChanged, format!("{} changed after the plan was made.", a.path.display())).with_remediation("Run setup again."),
@@ -473,28 +488,18 @@ pub fn uninstall(host: &Host) -> UninstallReport {
         let text = match read_text(&c.config) {
             Ok(Some(t)) => t,
             Ok(None) => continue,
-            Err(ReadFail::InvalidUtf8) => {
-                blocking.push(invalid_uninstall_action(
-                    c,
-                    format!("Can't read {}: the file is not valid UTF-8", c.config.display()),
-                    format!("Save {} as UTF-8 (or move it aside), then run uninstall again.", c.config.display()),
-                ));
-                continue;
-            }
-            Err(ReadFail::Io(e)) => {
-                blocking.push(invalid_uninstall_action(
-                    c,
-                    format!("Can't read {}: {e}", c.config.display()),
-                    "Check the file's permissions, then run uninstall again.".into(),
-                ));
+            Err(e) => {
+                blocking.push(invalid_uninstall_action(c, e.reason(&c.config), e.fix(&c.config, "run uninstall again")));
                 continue;
             }
         };
         match config::read_entry(c, &text) {
+            // Moving the file aside would also take its other servers out of use, and the retry
+            // would then skip it without removing our entry.
             Err(e) => blocking.push(invalid_uninstall_action(
                 c,
                 format!("{} can't be read as {:?}: {e}", c.config.display(), c.format),
-                format!("Fix or move {} (it was left untouched), then run uninstall again.", c.config.display()),
+                format!("Back up {} and fix it where it is (it was left untouched), then run uninstall again.", c.config.display()),
             )),
             Ok(Some(e)) if is_owned_entry(&e) => match config::remove_entry(c, &text) {
                 Ok(Some(new)) => targets.push((c, text, new)),

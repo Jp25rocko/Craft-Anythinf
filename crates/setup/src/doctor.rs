@@ -125,15 +125,8 @@ pub fn doctor(host: &Host, req: &DoctorRequest) -> DoctorReport {
                 checks.push(Check::new(name, st, format!("{} is installed but not connected.", c.display)).fix(setup_cmd));
                 continue;
             }
-            Err(crate::plan::ReadFail::InvalidUtf8) => {
-                checks.push(
-                    Check::new(name, CheckStatus::Fail, format!("Can't read {}: the file is not valid UTF-8", c.config.display()))
-                        .fix(format!("Save {} as UTF-8 (or move it aside), then run {setup_cmd}.", c.config.display())),
-                );
-                continue;
-            }
-            Err(crate::plan::ReadFail::Io(e)) => {
-                checks.push(Check::new(name, CheckStatus::Fail, format!("Can't read {}: {e}", c.config.display())).fix("Check the file's permissions."));
+            Err(e) => {
+                checks.push(Check::new(name, CheckStatus::Fail, e.reason(&c.config)).fix(e.fix(&c.config, &format!("run {setup_cmd}"))));
                 continue;
             }
         };
