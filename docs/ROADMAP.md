@@ -2218,6 +2218,8 @@ Owner: open · Status: in progress
       limitation (or note) with each folder and the system's reason, and partial coverage; a folder
       below the root that can't be listed at all marks the walk as cut short too. Tested on Windows
       with a folder held without sharing; the Unix path (no permission) runs in CI
+- [ ] `js_sources_restore` names a folder it couldn't list in its notes, but no test makes one: add
+      the case with a folder held without sharing (Windows) or without permission (Unix)
       — claimed: hichang4u, branch bugfix/r3.11-walk-gaps-named
       — claimed: hichang4u, branch bugfix/r3.11-walk-entry-reads
 - [x] `core_archives_compare` reports `rows_capped` and a partial-coverage limitation when the
