@@ -960,7 +960,9 @@ mod tests {
     /// the clock at each hop.
     #[test]
     fn one_timeout_covers_every_redirect_hop() {
-        let (url, redirector) = redirect_server("/mcp/".into(), Duration::from_millis(600), 2);
+        // Each hop takes 900 ms: with one 1 s budget the second hop is cut off near 1 s; with a
+        // fresh budget per hop it would finish at 1.8 s.
+        let (url, redirector) = redirect_server("/mcp/".into(), Duration::from_millis(900), 2);
         let msg = json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}});
         let started = Instant::now();
         let err = http_to(&url).post(&msg, Duration::from_secs(1), &|| false).err().unwrap();
