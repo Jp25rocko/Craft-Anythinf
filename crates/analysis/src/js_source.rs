@@ -36,7 +36,8 @@ fn tokenize_glob(p: &str) -> Option<Vec<Tok>> {
                     end += 1;
                 }
                 let at_seg_start = out.is_empty() || matches!(out.last(), Some(Tok::Lit('/') | Tok::GlobstarSlash));
-                let at_seg_end = end == chars.len() || chars.get(end) == Some(&'/');
+                let escaped_slash = chars.get(end) == Some(&'\\') && chars.get(end + 1) == Some(&'/');
+                let at_seg_end = end == chars.len() || chars.get(end) == Some(&'/') || escaped_slash;
                 if end - i >= 2 && at_seg_start && at_seg_end {
                     if chars.get(end) == Some(&'/') {
                         out.push(Tok::GlobstarSlash);

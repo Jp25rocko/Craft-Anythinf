@@ -64,7 +64,14 @@ fn declaration_files_d_mts_and_d_cts_are_excluded_from_scripts_and_resolved_edge
     module_paths.sort_unstable();
     assert_eq!(module_paths, ["index.html", "main.mts", "preloaded.ts"]);
     let main_mod = g.module("main.mts").expect("main.mts module");
-    assert!(main_mod.imports.iter().all(|imp| imp.resolved.is_none()), "declaration imports must not resolve: {:?}", main_mod.imports);
+    for decl_spec in ["./types.d.ts", "./esm.d.mts", "./cjs.d.cts", "./UPPER.D.MTS", "./shim.d.js"] {
+        let imp = main_mod
+            .imports
+            .iter()
+            .find(|imp| imp.specifier == decl_spec)
+            .unwrap_or_else(|| panic!("missing declaration import {decl_spec} in {:?}", main_mod.imports));
+        assert_eq!(imp.resolved, None, "declaration import {decl_spec} must not resolve: {imp:?}");
+    }
     let html_mod = g.module("index.html").expect("index.html module");
     assert_eq!(html_mod.imports[0].resolved, None, "html-script to .d.mts must not resolve");
     assert_eq!(html_mod.imports[1].resolved, None, "modulepreload to .d.cts must not resolve");
@@ -266,8 +273,10 @@ fn electron_preload_resolves_compiled_paths_to_typescript_sources() {
     assert_eq!(g.module("root_exact.js").expect("root exact js").role, "preload");
     assert_eq!(g.module("src/main/root_exact.ts").expect("module_dir ts").role, "unknown");
     assert_eq!(g.module("renderer/app.tsx").expect("renderer tsx").role, "renderer");
-    for (idx, win) in g.windows.iter().enumerate().take(11).skip(5) {
-        assert!(win["preload"].is_null(), "window {idx} preload must stay unresolved: {win:?}");
+    for name in ["w6", "w7", "w8", "w9", "w10", "w11"] {
+        let win =
+            g.windows.iter().find(|win| win["binding"].as_str() == Some(name)).unwrap_or_else(|| panic!("missing rejected window {name} in {:?}", g.windows));
+        assert!(win["preload"].is_null(), "window {name} preload must stay unresolved: {win:?}");
     }
 
     let ch = g.ipc.iter().find(|c| c.channel == "notes:ping").expect("notes:ping channel");
@@ -292,4 +301,98 @@ fn ordinary_javascript_and_json_resolution_control() {
     let main_mod = g.module("index.js").expect("index.js");
     assert_eq!(main_mod.imports[0].resolved.as_deref(), Some("lib/index.js"));
     assert_eq!(main_mod.imports[1].resolved.as_deref(), Some("config.json"));
+}
+
+/// Exact tails win (and reject multi-hit exact tails) before TypeScript fallbacks, and query/fragment
+/// suffixes are stripped before tail lookups while preserving local TypeScript source resolution.
+#[test]
+fn resolve_path_prefers_exact_tail_before_ts_fallback_and_strips_query_for_tail() {
+    let g = build_graph(
+        &[
+            ("package.json", r#"{"name":"tail-order","main":"./src/main/index.js","devDependencies":{"electron":"^33.0.0"}}"#),
+            (
+                "src/main/index.ts",
+                r#"
+                import { BrowserWindow } from "electron";
+                const exactTail = new BrowserWindow({ webPreferences: { preload: "bridge.js" } });
+                const dupExact = new BrowserWindow({ webPreferences: { preload: "dup_with_sibling.js" } });
+                const tailQuery = new BrowserWindow({ webPreferences: { preload: "./boot.js?v=2#frag" } });
+                const localTs = new BrowserWindow({ webPreferences: { preload: "local_ts_only.js" } });
+                "#,
+            ),
+            ("src/main/bridge.ts", "export const localSibling = 1;\n"),
+            ("pkg/bridge.js", "export const exactTail = 2;\n"),
+            ("src/main/dup_with_sibling.ts", "export const siblingTs = 1;\n"),
+            ("a/dup_with_sibling.js", "export const dupA = 1;\n"),
+            ("b/dup_with_sibling.js", "export const dupB = 2;\n"),
+            ("packages/ui/boot.ts", "export const booted = true;\n"),
+            ("src/main/local_ts_only.ts", "export const localOnly = true;\n"),
+            ("other/local_ts_only.ts", "export const otherTs = true;\n"),
+        ],
+        &[],
+    );
+
+    let win = |binding: &str| {
+        g.windows.iter().find(|w| w["binding"].as_str() == Some(binding)).unwrap_or_else(|| panic!("missing window {binding}: {:?}", g.windows))
+    };
+    assert_eq!(win("exactTail")["preload"].as_str(), Some("pkg/bridge.js"));
+    assert!(win("dupExact")["preload"].is_null(), "ambiguous exact tail must stay unresolved: {:?}", win("dupExact"));
+    assert_eq!(win("tailQuery")["preload"].as_str(), Some("packages/ui/boot.ts"));
+    assert_eq!(win("localTs")["preload"].as_str(), Some("src/main/local_ts_only.ts"));
+}
+
+/// Scheme-relative HTML references (`//cdn.example/...`) are never resolved to local files, query URLs
+/// (`?origin=https://...`) stay eligible as local paths, and unresolved bare HTML paths do not create
+/// `external:*` package nodes while real package imports still do.
+#[test]
+fn html_refs_reject_scheme_relative_preserve_query_urls_and_skip_external_nodes() {
+    let g = build_graph(
+        &[
+            (
+                "index.html",
+                r#"<!doctype html>
+                <link rel="modulepreload" href="//cdn.example/chunk.js">
+                <link rel="modulepreload" href="./preload_ok.js?origin=https://example.test">
+                <link rel="modulepreload" href="missing_preload.js">
+                <script type="module" src="//cdn.example/boot.js"></script>
+                <script type="module" src="./script_ok.js?origin=https://example.test"></script>
+                <script type="module" src="bare.d.mts"></script>
+                "#,
+            ),
+            ("cdn.example/boot.ts", "export const unrelatedBoot = 1;\n"),
+            ("cdn.example/chunk.ts", "export const unrelatedChunk = 1;\n"),
+            ("preload_ok.js", "export const preloadOk = 1;\n"),
+            ("script_ok.ts", "import 'react';\nexport const scriptOk = 1;\n"),
+            ("bare.d.mts", "export declare const bareDecl: number;\n"),
+        ],
+        &[],
+    );
+
+    let html_mod = g.module("index.html").expect("index.html module");
+    let find_imp = |kind: &str, spec: &str| {
+        html_mod
+            .imports
+            .iter()
+            .find(|imp| imp.kind == kind && imp.specifier == spec)
+            .unwrap_or_else(|| panic!("missing {kind} import {spec:?} in {:?}", html_mod.imports))
+    };
+
+    assert_eq!(find_imp("modulepreload", "//cdn.example/chunk.js").resolved, None);
+    assert_eq!(find_imp("modulepreload", "./preload_ok.js?origin=https://example.test").resolved.as_deref(), Some("preload_ok.js"));
+    assert_eq!(find_imp("modulepreload", "missing_preload.js").resolved, None);
+    assert_eq!(find_imp("html-script", "./script_ok.js?origin=https://example.test").resolved.as_deref(), Some("script_ok.ts"));
+    assert_eq!(find_imp("html-script", "bare.d.mts").resolved, None);
+    assert!(
+        !html_mod.imports.iter().any(|imp| imp.specifier == "//cdn.example/boot.js"),
+        "scheme-relative HTML script should be skipped before local resolution: {:?}",
+        html_mod.imports
+    );
+
+    assert_eq!(g.module("cdn.example/boot.ts").expect("cdn.example/boot.ts").role, "unknown");
+    assert_eq!(g.module("cdn.example/chunk.ts").expect("cdn.example/chunk.ts").role, "unknown");
+    assert_eq!(g.module("preload_ok.js").expect("preload_ok.js").role, "page");
+    assert_eq!(g.module("script_ok.ts").expect("script_ok.ts").role, "page");
+
+    let external_ids: Vec<&str> = g.nodes.iter().filter(|n| n.kind == "external").map(|n| n.id.as_str()).collect();
+    assert_eq!(external_ids, ["external:react"], "bare HTML paths must not become external package nodes: {external_ids:?}");
 }

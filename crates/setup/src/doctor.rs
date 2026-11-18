@@ -118,14 +118,21 @@ pub fn doctor(host: &Host, req: &DoctorRequest) -> DoctorReport {
             skill_dirs.push(c.skills_dir.clone());
         }
         let setup_cmd = format!("craft-anything-cli setup --client {}", c.id);
-        let text = match std::fs::read_to_string(&c.config) {
-            Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        let text = match crate::plan::read_text(&c.config) {
+            Ok(Some(t)) => t,
+            Ok(None) => {
                 let st = if explicit { CheckStatus::Fail } else { CheckStatus::Info };
                 checks.push(Check::new(name, st, format!("{} is installed but not connected.", c.display)).fix(setup_cmd));
                 continue;
             }
-            Err(e) => {
+            Err(crate::plan::ReadFail::InvalidUtf8) => {
+                checks.push(
+                    Check::new(name, CheckStatus::Fail, format!("Can't read {}: the file is not valid UTF-8", c.config.display()))
+                        .fix(format!("Save {} as UTF-8 (or move it aside), then run {setup_cmd}.", c.config.display())),
+                );
+                continue;
+            }
+            Err(crate::plan::ReadFail::Io(e)) => {
                 checks.push(Check::new(name, CheckStatus::Fail, format!("Can't read {}: {e}", c.config.display())).fix("Check the file's permissions."));
                 continue;
             }

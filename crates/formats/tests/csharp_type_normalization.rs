@@ -842,8 +842,10 @@ fn terminal_fallback_prefers_scope_resolved_arguments_over_alias_expansion() {
     assert_eq!(mixed_rec.matched.iter().map(|m| m.line).collect::<Vec<_>>(), vec![Some(8), Some(7)]);
 
     // Contextual `nint`/`nuint`/`dynamic` inside generic terminal fallback resolve to imported types
-    // (`Other.nint`/`Other.nuint`/`Other.dynamic`), while reserved `string` and explicit
-    // `System.IntPtr`/`global::System.IntPtr`/`System.UIntPtr` must never match `Other.nint`/`Other.nuint`.
+    // (`Other.nint`/`Other.nuint`/`Other.dynamic`), while reserved `string`, explicit
+    // `System.IntPtr`/`global::System.IntPtr`/`System.UIntPtr`, and CLR alias-expanded `IntPtr`/`UIntPtr`/`dynamic`
+    // must never match `Other.nint`/`Other.nuint`/`Other.object` (while `IntPtr`/`UIntPtr` still match
+    // built-in `List<nint>`/`List<nuint>` and `Other.IntPtr`/`Other.UIntPtr`, and `dynamic` matches `object`).
     let generic_kw_src = r#"
         using Other;
         using System.Collections.Generic;
@@ -851,6 +853,9 @@ fn terminal_fallback_prefers_scope_resolved_arguments_over_alias_expansion() {
             public class nint { }
             public class nuint { }
             public class dynamic { }
+            public class IntPtr { }
+            public class UIntPtr { }
+            public class @object { }
             public class @string { }
         }
         namespace App {
@@ -863,11 +868,23 @@ fn terminal_fallback_prefers_scope_resolved_arguments_over_alias_expansion() {
                 public static implicit operator List<global::System.IntPtr>(MixedBox b) => null;
                 public static implicit operator List<nint>(MixedBox b) => null;
             }
+            public class AliasBox {
+                public static implicit operator List<IntPtr>(AliasBox b) => null;
+                public static implicit operator List<UIntPtr>(AliasBox b) => null;
+            }
+            public class AliasControlBox {
+                public static implicit operator List<IntPtr>(AliasControlBox b) => null;
+                public static implicit operator List<UIntPtr>(AliasControlBox b) => null;
+                public static implicit operator List<dynamic>(AliasControlBox b) => null;
+            }
             public class BadBox {
                 public static implicit operator List<string>(BadBox b) => null;
                 public static implicit operator List<global::System.IntPtr>(BadBox b) => null;
                 public static implicit operator List<System.IntPtr>(BadBox b) => null;
                 public static implicit operator List<System.UIntPtr>(BadBox b) => null;
+                public static implicit operator List<IntPtr>(BadBox b) => null;
+                public static implicit operator List<UIntPtr>(BadBox b) => null;
+                public static implicit operator List<dynamic>(BadBox b) => null;
             }
         }
     "#;
@@ -876,6 +893,9 @@ fn terminal_fallback_prefers_scope_resolved_arguments_over_alias_expansion() {
             meta_type("Other.nint", vec![meta_method(".ctor", &[], "void")]),
             meta_type("Other.nuint", vec![meta_method(".ctor", &[], "void")]),
             meta_type("Other.dynamic", vec![meta_method(".ctor", &[], "void")]),
+            meta_type("Other.IntPtr", vec![meta_method(".ctor", &[], "void")]),
+            meta_type("Other.UIntPtr", vec![meta_method(".ctor", &[], "void")]),
+            meta_type("Other.object", vec![meta_method(".ctor", &[], "void")]),
             meta_type("Other.string", vec![meta_method(".ctor", &[], "void")]),
             meta_type(
                 "App.Box",
@@ -895,6 +915,23 @@ fn terminal_fallback_prefers_scope_resolved_arguments_over_alias_expansion() {
                 ],
             ),
             meta_type(
+                "App.AliasBox",
+                vec![
+                    meta_method(".ctor", &[], "void"),
+                    meta_method("op_Implicit", &["App.AliasBox"], "System.Collections.Generic.List<nint>"),
+                    meta_method("op_Implicit", &["App.AliasBox"], "System.Collections.Generic.List<nuint>"),
+                ],
+            ),
+            meta_type(
+                "App.AliasControlBox",
+                vec![
+                    meta_method(".ctor", &[], "void"),
+                    meta_method("op_Implicit", &["App.AliasControlBox"], "System.Collections.Generic.List<Other.IntPtr>"),
+                    meta_method("op_Implicit", &["App.AliasControlBox"], "System.Collections.Generic.List<Other.UIntPtr>"),
+                    meta_method("op_Implicit", &["App.AliasControlBox"], "System.Collections.Generic.List<object>"),
+                ],
+            ),
+            meta_type(
                 "App.BadBox",
                 vec![
                     meta_method(".ctor", &[], "void"),
@@ -902,24 +939,29 @@ fn terminal_fallback_prefers_scope_resolved_arguments_over_alias_expansion() {
                     meta_method("op_Implicit", &["App.BadBox"], "System.Collections.Generic.List<Other.nint>"),
                     meta_method("op_Implicit", &["App.BadBox"], "System.Collections.Generic.List<Other.nint>"),
                     meta_method("op_Implicit", &["App.BadBox"], "System.Collections.Generic.List<Other.nuint>"),
+                    meta_method("op_Implicit", &["App.BadBox"], "System.Collections.Generic.List<Other.nint>"),
+                    meta_method("op_Implicit", &["App.BadBox"], "System.Collections.Generic.List<Other.nuint>"),
+                    meta_method("op_Implicit", &["App.BadBox"], "System.Collections.Generic.List<Other.object>"),
                 ],
             ),
         ],
-        total_types: 7,
-        total_methods: 13,
+        total_types: 12,
+        total_methods: 27,
         total_fields: 0,
         truncated: false,
         warnings: vec![],
     };
     let generic_kw_rec = reconcile(&generic_kw_members, &scan(generic_kw_src));
-    assert_eq!(generic_kw_rec.missing.len(), 4, "expected only BadBox cases missing: {:?}", generic_kw_rec);
+    assert_eq!(generic_kw_rec.missing.len(), 7, "expected only BadBox cases missing: {:?}", generic_kw_rec);
     assert!(generic_kw_rec.missing.iter().all(|m| m.type_name == "App.BadBox"), "{:?}", generic_kw_rec.missing);
-    assert_eq!(generic_kw_rec.extra.len(), 4, "expected only BadBox cases extra: {:?}", generic_kw_rec);
+    assert_eq!(generic_kw_rec.extra.len(), 7, "expected only BadBox cases extra: {:?}", generic_kw_rec);
     assert!(generic_kw_rec.extra.iter().all(|m| m.type_name == "App.BadBox"), "{:?}", generic_kw_rec.extra);
+    let alias_lines: Vec<_> = generic_kw_rec.matched.iter().filter(|m| m.type_name == "App.AliasBox").map(|m| m.line).collect();
+    assert_eq!(alias_lines, vec![Some(24), Some(25)], "AliasBox exact List<nint>/List<nuint> matches: {:?}", generic_kw_rec.matched);
     let mixed_lines: Vec<_> = generic_kw_rec.matched.iter().filter(|m| m.type_name == "App.MixedBox").map(|m| m.line).collect();
     assert_eq!(
         mixed_lines,
-        vec![Some(18), Some(17)],
+        vec![Some(21), Some(20)],
         "MixedBox must pair List<nint>->Other.nint and List<global::System.IntPtr>->nint without swapping: {:?}",
         generic_kw_rec.matched
     );

@@ -94,11 +94,27 @@ pub fn default_command() -> Result<Vec<String>, ToolError> {
     Ok(vec![p.display().to_string(), "mcp".into()])
 }
 
-fn read_text(path: &Path) -> Result<Option<String>, String> {
+/// Why reading a client config file failed before syntax parsing.
+pub(crate) enum ReadFail {
+    InvalidUtf8,
+    Io(String),
+}
+
+impl std::fmt::Display for ReadFail {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReadFail::InvalidUtf8 => f.write_str("the file is not valid UTF-8"),
+            ReadFail::Io(e) => f.write_str(e),
+        }
+    }
+}
+
+/// Read `path` as UTF-8 text, returning `Ok(None)` when the file does not exist.
+pub(crate) fn read_text(path: &Path) -> Result<Option<String>, ReadFail> {
     match std::fs::read(path) {
-        Ok(b) => String::from_utf8(b).map(Some).map_err(|_| "the file is not valid UTF-8".to_string()),
+        Ok(b) => String::from_utf8(b).map(Some).map_err(|_| ReadFail::InvalidUtf8),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.to_string()),
+        Err(e) => Err(ReadFail::Io(e.to_string())),
     }
 }
 
@@ -141,7 +157,13 @@ pub fn inspect_client(c: &Client, command: &[String]) -> Action {
     let desired = c.desired_entry(command);
     let text = match read_text(&c.config) {
         Ok(t) => t,
-        Err(e) => {
+        Err(ReadFail::InvalidUtf8) => {
+            a.action = ActionKind::Invalid;
+            a.reason = Some(format!("Can't read {}: the file is not valid UTF-8", c.config.display()));
+            a.remediation = Some(format!("Save {} as UTF-8 (or move it aside), then run setup again.", c.config.display()));
+            return a;
+        }
+        Err(ReadFail::Io(e)) => {
             a.action = ActionKind::Invalid;
             a.reason = Some(format!("Can't read {}: {e}", c.config.display()));
             a.remediation = Some("Check the file's permissions.".into());
@@ -380,7 +402,7 @@ pub(crate) fn apply_with(plan: &Plan, write: Writer<'_>) -> ApplyReport {
 /// Write one file. On error, the flag says whether the file may have been changed.
 fn write_one(a: &Action, c: &Client, new: &str, write: Writer<'_>) -> Result<(), (ToolError, bool)> {
     // The file must not have changed since the plan was made.
-    let now = read_text(&a.path).map_err(|e| (ToolError::new(ErrorCode::FileError, e), false))?;
+    let now = read_text(&a.path).map_err(|e| (ToolError::new(ErrorCode::FileError, format!("Can't read {}: {e}", a.path.display())), false))?;
     if now != a.old_text {
         return Err((
             ToolError::new(ErrorCode::FileChanged, format!("{} changed after the plan was made.", a.path.display())).with_remediation("Run setup again."),
@@ -424,6 +446,23 @@ pub struct UninstallReport {
     pub kept: Vec<String>,
 }
 
+/// Build an [`ActionKind::Invalid`] record when `c`'s config blocks [`uninstall`].
+fn invalid_uninstall_action(c: &Client, reason: String, remediation: String) -> Action {
+    Action {
+        client: c.id.into(),
+        display: c.display.into(),
+        path: c.config.clone(),
+        action: ActionKind::Invalid,
+        backup: None,
+        preview: String::new(),
+        reason: Some(reason),
+        remediation: Some(remediation),
+        old_text: None,
+        new_text: None,
+        client_def: Some(c.clone()),
+    }
+}
+
 /// Remove our registrations and skill files, and nothing else. If any config can't be read
 /// safely, nothing at all is removed.
 pub fn uninstall(host: &Host) -> UninstallReport {
@@ -434,19 +473,41 @@ pub fn uninstall(host: &Host) -> UninstallReport {
         let text = match read_text(&c.config) {
             Ok(Some(t)) => t,
             Ok(None) => continue,
-            Err(e) => {
-                let mut a = inspect_client(c, &[]);
-                a.action = ActionKind::Invalid;
-                a.reason = Some(e);
-                blocking.push(a);
+            Err(ReadFail::InvalidUtf8) => {
+                blocking.push(invalid_uninstall_action(
+                    c,
+                    format!("Can't read {}: the file is not valid UTF-8", c.config.display()),
+                    format!("Save {} as UTF-8 (or move it aside), then run uninstall again.", c.config.display()),
+                ));
+                continue;
+            }
+            Err(ReadFail::Io(e)) => {
+                blocking.push(invalid_uninstall_action(
+                    c,
+                    format!("Can't read {}: {e}", c.config.display()),
+                    "Check the file's permissions, then run uninstall again.".into(),
+                ));
                 continue;
             }
         };
         match config::read_entry(c, &text) {
-            Err(_) => blocking.push(inspect_client(c, &[])),
+            Err(e) => blocking.push(invalid_uninstall_action(
+                c,
+                format!("{} can't be read as {:?}: {e}", c.config.display(), c.format),
+                format!("Fix or move {} (it was left untouched), then run uninstall again.", c.config.display()),
+            )),
             Ok(Some(e)) if is_owned_entry(&e) => match config::remove_entry(c, &text) {
                 Ok(Some(new)) => targets.push((c, text, new)),
-                _ => blocking.push(inspect_client(c, &[])),
+                Ok(None) => blocking.push(invalid_uninstall_action(
+                    c,
+                    format!("Can't remove our entry from {}: the \"{SERVER_NAME}\" entry could not be located safely", c.config.display()),
+                    format!("Remove the \"{SERVER_NAME}\" entry from {} by hand, then run uninstall again.", c.config.display()),
+                )),
+                Err(e) => blocking.push(invalid_uninstall_action(
+                    c,
+                    format!("Can't remove our entry from {}: {e}", c.config.display()),
+                    format!("Remove the \"{SERVER_NAME}\" entry from {} by hand, or fix the file and run uninstall again.", c.config.display()),
+                )),
             },
             Ok(_) => {}
         }

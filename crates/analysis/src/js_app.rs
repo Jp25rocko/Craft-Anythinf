@@ -241,9 +241,27 @@ pub fn dir_of(path: &str) -> &str {
     path.rsplit_once('/').map_or("", |(d, _)| d)
 }
 
+/// Return the path component before any `?` query or `#` fragment.
+fn strip_query_fragment(raw: &str) -> &str {
+    raw.split(['?', '#']).next().unwrap_or(raw)
+}
+
+/// Whether `s` ends with ASCII `suffix`, case-insensitively without allocating.
+fn ends_with_ascii_ci(s: &str, suffix: &str) -> bool {
+    let sb = s.as_bytes();
+    let eb = suffix.as_bytes();
+    sb.len() >= eb.len() && sb[sb.len() - eb.len()..].eq_ignore_ascii_case(eb)
+}
+
+/// Whether `raw` is a scheme or scheme-relative external HTML reference.
+fn is_external_html_ref(raw: &str) -> bool {
+    let head = strip_query_fragment(raw);
+    head.contains("://") || head.starts_with("//")
+}
+
 /// Join and normalise; `None` when the result would escape the root.
 pub fn join_rel(base_dir: &str, rel: &str) -> Option<String> {
-    let rel = rel.split(['?', '#']).next().unwrap_or(rel);
+    let rel = strip_query_fragment(rel);
     let mut parts: Vec<&str> = if rel.starts_with('/') { Vec::new() } else { base_dir.split('/').filter(|p| !p.is_empty()).collect() };
     for p in rel.split(['/', '\\']) {
         match p {
@@ -261,8 +279,7 @@ const SCRIPT_EXTS: &[&str] = &[".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".m
 
 /// Whether `path` names a TypeScript type-declaration file (`.d.ts`, `.d.mts`, `.d.cts`).
 fn is_ts_declaration(path: &str) -> bool {
-    let l = path.to_ascii_lowercase();
-    l.ends_with(".d.ts") || l.ends_with(".d.mts") || l.ends_with(".d.cts")
+    ends_with_ascii_ci(path, ".d.ts") || ends_with_ascii_ci(path, ".d.mts") || ends_with_ascii_ci(path, ".d.cts")
 }
 
 /// Map a compiled JavaScript specifier path (`.js`, `.mjs`, `.cjs`, `.jsx`) to its TypeScript
@@ -283,13 +300,17 @@ fn ts_source_fallbacks(path: &str) -> Vec<String> {
 
 /// Whether `path` is an executable JavaScript or TypeScript module rather than a declaration file.
 pub fn is_script(path: &str) -> bool {
-    let l = path.to_ascii_lowercase();
-    SCRIPT_EXTS.iter().any(|e| l.ends_with(e)) && !is_ts_declaration(&l)
+    SCRIPT_EXTS.iter().any(|e| ends_with_ascii_ci(path, e)) && !is_ts_declaration(path)
 }
 
 fn is_html(path: &str) -> bool {
-    let l = path.to_ascii_lowercase();
-    l.ends_with(".html") || l.ends_with(".htm")
+    ends_with_ascii_ci(path, ".html") || ends_with_ascii_ci(path, ".htm")
+}
+
+enum TailMatch<'a> {
+    None,
+    One(&'a str),
+    Ambiguous,
 }
 
 struct Resolver<'a> {
@@ -297,6 +318,24 @@ struct Resolver<'a> {
 }
 
 impl Resolver<'_> {
+    fn unique_tail(&self, t: &str) -> TailMatch<'_> {
+        if t.is_empty() {
+            return TailMatch::None;
+        }
+        let suffix = format!("/{t}");
+        let mut hit = None;
+        for f in self.files {
+            // Check the suffix before filtering declarations and stop once ambiguous.
+            if (f.as_str() == t || f.ends_with(&suffix)) && !is_ts_declaration(f) {
+                if hit.is_some() {
+                    return TailMatch::Ambiguous;
+                }
+                hit = Some(f.as_str());
+            }
+        }
+        hit.map_or(TailMatch::None, TailMatch::One)
+    }
+
     fn resolve(&self, from_dir: &str, spec: &str) -> Option<String> {
         if !(spec.starts_with('.') || spec.starts_with('/')) {
             return None;
@@ -326,10 +365,10 @@ impl Resolver<'_> {
         candidates.into_iter().find(|c| !is_ts_declaration(c) && self.files.contains(c))
     }
 
-    /// A path written in code (`preload.js`, `renderer/index.html`), tried as an exact match from
-    /// the module's folder and the app root first, then via TypeScript source counterparts.
+    /// A path written in code (`preload.js`, `renderer/index.html`), trying exact direct and unique
+    /// exact-tail matches before TypeScript source counterparts.
     fn resolve_path(&self, module_dir: &str, root: &str, p: &str) -> Option<String> {
-        let p = p.trim_start_matches("file://");
+        let p = strip_query_fragment(p.trim_start_matches("file://"));
         for base in [module_dir, root] {
             if let Some(j) = join_rel(base, p)
                 && !is_ts_declaration(&j)
@@ -338,6 +377,12 @@ impl Resolver<'_> {
                 return Some(j);
             }
         }
+        let tail = p.trim_start_matches("./").trim_start_matches('/');
+        match self.unique_tail(tail) {
+            TailMatch::One(hit) => return Some(hit.to_string()),
+            TailMatch::Ambiguous => return None,
+            TailMatch::None => {}
+        }
         for base in [module_dir, root] {
             if let Some(j) = join_rel(base, p)
                 && let Some(ts) = ts_source_fallbacks(&j).into_iter().find(|c| !is_ts_declaration(c) && self.files.contains(c))
@@ -345,19 +390,21 @@ impl Resolver<'_> {
                 return Some(ts);
             }
         }
-        // Last resort: a unique file with that tail (or a unique TypeScript source counterpart
-        // across all fallback extensions when no exact tail exists).
-        let tail = p.trim_start_matches("./").trim_start_matches('/');
-        let tail_hits = |t: &str| -> Vec<&String> {
-            let suffix = format!("/{t}");
-            self.files.iter().filter(|f| !is_ts_declaration(f) && (f.ends_with(&suffix) || f.as_str() == t)).collect()
-        };
-        let exact_hits = tail_hits(tail);
-        if !exact_hits.is_empty() {
-            return if exact_hits.len() == 1 { exact_hits.first().map(|s| (*s).clone()) } else { None };
+        // Last resort: a unique TypeScript source counterpart across all fallback extensions.
+        let mut hit: Option<&str> = None;
+        for fb in ts_source_fallbacks(tail) {
+            match self.unique_tail(&fb) {
+                TailMatch::Ambiguous => return None,
+                TailMatch::One(path) => {
+                    if hit.is_some() {
+                        return None;
+                    }
+                    hit = Some(path);
+                }
+                TailMatch::None => {}
+            }
         }
-        let fallback_hits: Vec<&String> = ts_source_fallbacks(tail).into_iter().flat_map(|fb| tail_hits(&fb)).collect();
-        if fallback_hits.len() == 1 { fallback_hits.first().map(|s| (*s).clone()) } else { None }
+        hit.map(str::to_string)
     }
 }
 
@@ -538,14 +585,14 @@ pub fn analyze_application(input: &AppInput, opts: &AppOptions, cancelled: &dyn 
         if let Some(h) = &a.html {
             for s in &h.scripts {
                 if let Some(src) = &s.src
-                    && !src.contains("://")
+                    && !is_external_html_ref(src)
                 {
                     let r = resolver.resolve_path(&dir, &pkg_root, src);
                     v.push(ResolvedImport { kind: "html-script".into(), specifier: src.clone(), resolved: r, line: s.line });
                 }
             }
             for p in &h.preloads {
-                let r = (!p.contains("://"))
+                let r = (!is_external_html_ref(p))
                     .then(|| join_rel(&dir, p))
                     .flatten()
                     .and_then(|j| std::iter::once(j.clone()).chain(ts_source_fallbacks(&j)).find(|c| !is_ts_declaration(c) && file_set.contains(c)));
@@ -668,7 +715,11 @@ pub fn analyze_application(input: &AppInput, opts: &AppOptions, cancelled: &dyn 
         for imp in resolved_imports.get(m).into_iter().flatten() {
             let to = match &imp.resolved {
                 Some(r) => Some(module_id(r)),
-                None if !imp.specifier.starts_with('.') && !imp.specifier.starts_with('/') && !imp.specifier.contains('{') => {
+                None if !matches!(imp.kind.as_str(), "html-script" | "modulepreload")
+                    && !imp.specifier.starts_with('.')
+                    && !imp.specifier.starts_with('/')
+                    && !imp.specifier.contains('{') =>
+                {
                     let pkg = package_name(&imp.specifier);
                     b.node(format!("external:{pkg}"), "external", pkg.clone(), None, None, Value::Null)
                 }

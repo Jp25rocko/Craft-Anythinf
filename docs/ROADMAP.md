@@ -1229,6 +1229,8 @@ Owner: open · Status: in progress
       — claimed: Plastic-time, branch bugfix/r2.2-yaml-config-bom
 - [x] Match YAML block mapping keys across optional whitespace before the colon and require a mapping-indicator boundary after it, so `mcp_servers :` is updated in place and plain keys containing colons (`craft-anything:dev`) are left untouched.
       — claimed: Plastic-time, branch bugfix/r2.2-yaml-mapping-key-boundaries
+- [x] Report dedicated `ActionKind::Invalid` uninstall diagnostics and remediations when a config blocks `setup::uninstall` (unremovable flow/escaped entries, malformed syntax, invalid UTF-8, or I/O errors), and distinguish invalid UTF-8 from permission errors across `plan`, `doctor`, and `uninstall`.
+      — claimed: Plastic-time, branch bugfix/r2.2-uninstall-blocking-diagnostics
 - [ ] See whether Hermes still fails on 0.3.0 (#460: the fix its `fixed` label names was already in
       0.3.0 when it was filed, and it gives no version)
 
@@ -2248,6 +2250,8 @@ Owner: open · Status: in progress
       — claimed: Afloat16, branch bugfix/r3.12-pyc-truncated-text-evidence-20261110
 - [x] Keep worker, service-worker and utility-process entry modules in their own execution role instead of inheriting the parent role through spawn edges.
       — claimed: Afloat16, branch bugfix/r3.12-worker-role-boundaries
+- [x] Point `js_ledger` `storage`, methodless `endpoint`, and listed `.node` expectations at their actual `AppGraph` `source_node` IDs, deduplicate candidate expectations by `expectation_id`, and aggregate all `Binding` records from the same owner without dropping later cases or hiding a failing verifier.
+      — claimed: Plastic-time, branch bugfix/r3.12-js-ledger-storage-and-bindings
 - [x] Read the explicit module-format byte in current Node SEA blobs while retaining the older layouts;
       report the stored format and recover the main script, assets and execution arguments at their real offsets.
       — claimed: Afloat16, branch bugfix/r3.12-node-sea-module-format-20261110
@@ -2265,6 +2269,11 @@ Owner: open · Status: in progress
       — claimed: AlexJoaquimPereira, branch bugfix/r3.12-import-facts-truncation
 - [x] Exclude `.d.mts` and `.d.cts` declaration files from `js_app` script modules and import resolution, and resolve TypeScript `.js`/`.mjs`/`.cjs`/`.jsx` → `.ts`/`.tsx`/`.mts`/`.cts` source specifiers, `.mts`/`.cts` modules, directory `index` files, and Electron preload paths in unbuilt TypeScript trees.
       — claimed: Plastic-time, branch bugfix/r3.12-js-app-typescript-resolution
+- [x] #2097 follow-up: in `js_app`, check exact (and ambiguous) tails before TypeScript source
+      fallbacks, strip `?query`/`#fragment` before tail lookups, skip scheme-relative HTML
+      references, keep local references whose query holds a URL, and stop turning unresolved
+      HTML script/preload paths into `external:*` packages.
+      — claimed: Plastic-time, branch bugfix/r3.12-js-app-tail-order-and-html-refs
 - [x] Preserve webpack factory parameter names when direct eval can read them.
       — claimed: Plastic-time, branch bugfix/r3.12-js-eval-param-renaming-1115
 - [x] Preserve void zero expressions when a with statement can dynamically resolve undefined.
@@ -2865,6 +2874,8 @@ Owner: open · Status: in progress
 - [x] Normalize C# metadata `/` nested-type separators, `global::` qualifiers, `ref` parameter modifiers, non-`System` built-in-named types, and zero-based multidimensional array bounds in `dotnet::csharp` reconciliation. — claimed: Plastic-time, branch bugfix/r3.12-csharp-type-normalization
 - [x] Resolve unqualified CLR built-in aliases inside C# conversion targets (including generic arguments under qualified outer types) against enclosing scopes and known types so unshadowed `String` matches `string` even alongside `Other.String` while local `App.String` stays distinct. — claimed: Plastic-time, branch bugfix/r3.12-csharp-conversion-builtin-aliases
 - [x] Resolve C# contextual type keywords (`nint`, `nuint`, `dynamic`) against declared types before built-in fallback, and prefer scope-resolved generic arguments over alias expansion in conversion terminal fallback. — claimed: Plastic-time, branch bugfix/r3.12-csharp-contextual-keywords-and-fallback
+- [x] Keep CLR alias-expanded `nint`/`nuint` generic arguments (`List<IntPtr>`, `List<UIntPtr>`) exact-match-only rather than falling back to imported `Other.nint`/`Other.nuint`.
+      — claimed: Plastic-time, branch bugfix/r3.12-csharp-alias-expanded-nint-fallback
 - [x] Reject CIL branch and switch destinations outside the method body without wrapping signed displacements.
       — claimed: Afloat16, branch bugfix/r3.12-cil-branch-target-ranges-20261111
 - [x] Validate CIL method exception-section kinds, extents and complete clause records before reading exception handlers.
@@ -3257,6 +3268,9 @@ Owner: open · Status: in progress
 - [x] Honour leading backslash wildcard escapes, escaped trailing spaces, slash-bounded `**`
       segments, and excluded parent-directory propagation in `js_source::Ignore`.
       — claimed: Plastic-time, branch bugfix/r3.12-gitignore-pattern-rules
+- [x] Recognize an escaped slash (`\/`) after a `**` globstar segment in `js_source::Ignore`
+      while preserving the separate literal slash token.
+      — claimed: Plastic-time, branch bugfix/r3.12-gitignore-globstar-escaped-slash
 
 
 - [x] Take target file signatures from the shared craft-sniff table. The app still breaks ties
