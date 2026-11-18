@@ -334,10 +334,9 @@ impl Http {
         })
     }
 
-    /// POSTs `msg`, giving up after `timeout` across every redirect hop and before resending once
+    /// POSTs `msg`, giving up at `deadline` across every redirect hop and before resending once
     /// `cancelled` says so.
-    fn post(&mut self, msg: &Value, timeout: Duration, cancelled: &dyn Fn() -> bool) -> Result<ureq::http::Response<ureq::Body>, ToolError> {
-        let deadline = Instant::now() + timeout.max(Duration::from_secs(1));
+    fn post(&mut self, msg: &Value, deadline: Instant, cancelled: &dyn Fn() -> bool) -> Result<ureq::http::Response<ureq::Body>, ToolError> {
         let mut builder = ureq::Agent::config_builder()
             .https_only(self.https)
             .http_status_as_error(false)
@@ -391,7 +390,7 @@ impl Http {
                     return ToolError::new(ErrorCode::EngineMissing, format!("The {} plugin redirected to plain HTTP and was refused.", self.name))
                         .with_remediation("Keep every redirect for a remote MCP plugin on HTTPS.");
                 }
-                let code = if matches!(e, ureq::Error::Timeout(_)) { ErrorCode::TimedOut } else { ErrorCode::EngineMissing };
+                let code = if timed_out(&e) { ErrorCode::TimedOut } else { ErrorCode::EngineMissing };
                 ToolError::new(code, format!("Couldn't reach the {} plugin: {e}", self.name))
                     .with_remediation("Check its url in config.toml ([[plugins.mcp]]) and your connection.")
             })?;
@@ -421,12 +420,19 @@ impl Http {
             hops += 1;
             url = next;
         };
-        if origin(&url) == home
-            && let Some(s) = resp.headers().get("mcp-session-id").and_then(|v| v.to_str().ok())
-        {
-            self.session = Some(s.to_string());
-        }
         let status = resp.status().as_u16();
+        if let Some(s) = resp.headers().get("mcp-session-id").and_then(|v| v.to_str().ok()) {
+            if origin(&url) == home {
+                self.session = Some(s.to_string());
+            } else if (200..300).contains(&status) {
+                // The session would have to be sent to an address that wasn't configured.
+                return Err(ToolError::new(
+                    ErrorCode::EngineMissing,
+                    format!("The {} plugin redirected to another address on this computer that started a session, which isn't followed.", self.name),
+                )
+                .with_remediation("Set its url in config.toml ([[plugins.mcp]]) to the final address."));
+            }
+        }
         if !(200..300).contains(&status) {
             let hint = if status == 401 || status == 403 {
                 "Check the plugin's headers (its key or token) in config.toml."
@@ -441,8 +447,11 @@ impl Http {
 
 impl Transport for Http {
     fn notify(&mut self, msg: &Value) -> Result<(), ToolError> {
-        self.post(msg, Duration::from_secs(30), &|| false)?;
-        if msg.get("method").and_then(Value::as_str) == Some("notifications/initialized") {
+        let method = msg.get("method").and_then(Value::as_str);
+        // A cancellation is best effort and the caller waits for it, so it gets a short budget.
+        let budget = if method == Some("notifications/cancelled") { Duration::from_secs(2) } else { Duration::from_secs(30) };
+        self.post(msg, Instant::now() + budget, &|| false)?;
+        if method == Some("notifications/initialized") {
             self.initialized = true;
         }
         Ok(())
@@ -452,17 +461,14 @@ impl Transport for Http {
         if cancelled() {
             return Err(ToolError::cancelled());
         }
-        let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            return Err(ToolError::new(ErrorCode::TimedOut, "no answer in time"));
-        }
-        let resp = self.post(msg, left, cancelled)?;
+        let resp = self.post(msg, deadline, cancelled)?;
         let event_stream = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).is_some_and(|t| t.starts_with("text/event-stream"));
         let unreadable =
             |e: &dyn std::fmt::Display| ToolError::new(ErrorCode::GarbledOutput, format!("The {} plugin's answer couldn't be read: {e}", self.name));
+        let late = || ToolError::new(ErrorCode::TimedOut, "no answer in time");
         let mut body = resp.into_body();
         if !event_stream {
-            let text = body.with_config().limit(MAX_LINE as u64).read_to_string().map_err(|e| unreadable(&e))?;
+            let text = body.with_config().limit(MAX_LINE as u64).read_to_string().map_err(|e| if timed_out(&e) { late() } else { unreadable(&e) })?;
             let v: Value = serde_json::from_str(&text).map_err(|e| unreadable(&e))?;
             // A batch is allowed too.
             let found = match v {
@@ -478,7 +484,7 @@ impl Transport for Http {
             if cancelled() {
                 return Err(ToolError::cancelled());
             }
-            let line = line.map_err(|e| unreadable(&e))?;
+            let line = line.map_err(|e| if io_timed_out(&e) { late() } else { unreadable(&e) })?;
             if let Some(d) = line.strip_prefix("data:") {
                 data.push_str(d.strip_prefix(' ').unwrap_or(d));
                 data.push('\n');
@@ -525,7 +531,8 @@ fn resolve_location(base: &str, location: &str) -> Option<String> {
     let joined = if loc.starts_with('/') {
         format!("{origin}{loc}")
     } else if loc.starts_with('?') {
-        format!("{origin}{path}{loc}")
+        // The base path is kept exactly as it was sent.
+        return Some(format!("{origin}{path}{loc}"));
     } else {
         let dir = path.rfind('/').map_or("/", |i| &path[..=i]);
         format!("{origin}{dir}{loc}")
@@ -561,11 +568,31 @@ fn without_dot_segments(url: &str) -> String {
     format!("{}/{}{}", &url[..path_start], out.join("/"), &url[path_end..])
 }
 
-/// `scheme://authority` of `url`, lowercased, so redirect targets can be compared with the
-/// configured server.
-fn origin(url: &str) -> Option<String> {
+/// The scheme, host and port of `url` (the scheme's default port when none is written), lowercased,
+/// so redirect targets can be compared with the configured server.
+fn origin(url: &str) -> Option<(String, String, u16)> {
     let uri = url.trim().parse::<ureq::http::Uri>().ok()?;
-    Some(format!("{}://{}", uri.scheme_str()?, uri.authority()?.as_str()).to_ascii_lowercase())
+    let scheme = uri.scheme_str()?.to_ascii_lowercase();
+    let port = match (uri.port_u16(), scheme.as_str()) {
+        (Some(p), _) => p,
+        (None, "http") => 80,
+        (None, "https") => 443,
+        (None, _) => return None,
+    };
+    Some((scheme, uri.host()?.to_ascii_lowercase(), port))
+}
+
+/// Whether a ureq error is its timeout, also when a body reader wrapped it in an I/O error.
+fn timed_out(e: &ureq::Error) -> bool {
+    match e {
+        ureq::Error::Timeout(_) => true,
+        ureq::Error::Io(e) => io_timed_out(e),
+        _ => false,
+    }
+}
+
+fn io_timed_out(e: &std::io::Error) -> bool {
+    e.kind() == std::io::ErrorKind::TimedOut || e.get_ref().and_then(|i| i.downcast_ref::<ureq::Error>()).is_some_and(timed_out)
 }
 
 /// `https://`, or `http://` to this computer only (keys must not cross the network in the clear).
@@ -904,7 +931,7 @@ mod tests {
         let url = format!("http://{}/mcp", listener.local_addr().unwrap());
         let handle = std::thread::spawn(move || {
             listener.set_nonblocking(true).unwrap();
-            let deadline = Instant::now() + Duration::from_secs(10);
+            let deadline = Instant::now() + Duration::from_secs(3);
             let mut seen = 0;
             while seen < accepts && Instant::now() < deadline {
                 let Ok((mut s, _)) = listener.accept() else {
@@ -929,18 +956,99 @@ mod tests {
         Http::new("local", &ServerUrl { url: url.to_string(), headers }).unwrap()
     }
 
+    fn soon(d: Duration) -> Instant {
+        Instant::now() + d
+    }
+
     /// A redirect to another port on this computer is followed, but the configured headers and
-    /// session stay with the configured server.
+    /// session stay with the configured server. A session the other address starts can't be sent
+    /// back to it, so that handshake is refused; an answer without a session is used.
     #[test]
     fn loopback_redirect_to_another_origin_drops_configured_headers() {
-        let (target, server) = http_server_with(1, false);
-        let (url, redirector) = redirect_server(target, Duration::ZERO, 1);
+        let (target, server) = http_server_with(2, false);
+        let (url, redirector) = redirect_server(target, Duration::ZERO, 2);
         let mut http = http_to(&url);
         http.session = Some("s-1".into());
         let init = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}});
-        http.post(&init, Duration::from_secs(10), &|| false).unwrap();
-        assert_eq!(redirector.join().unwrap(), 1);
-        assert_eq!(server.join().unwrap(), ["initialize session=false auth=false"]);
+        let err = http.post(&init, soon(Duration::from_secs(10)), &|| false).err().unwrap();
+        assert!(err.message.contains("started a session"), "{err:?}");
+        assert!(err.remediation.as_deref().is_some_and(|r| r.contains("final address")), "{err:?}");
+        assert!(!format!("{err:?}").contains("127.0.0.1"), "redirect target leaked: {err:?}");
+        let list = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}});
+        http.post(&list, soon(Duration::from_secs(10)), &|| false).unwrap();
+        assert_eq!(redirector.join().unwrap(), 2);
+        assert_eq!(server.join().unwrap(), ["initialize session=false auth=false", "tools/list session=false auth=false"]);
+    }
+
+    /// Ports are compared by value: `http://127.0.0.1/` and `http://127.0.0.1:80/` are one origin.
+    #[test]
+    fn origins_compare_the_effective_port() {
+        assert_eq!(origin("http://127.0.0.1/mcp"), origin("http://127.0.0.1:80/mcp/"));
+        assert_eq!(origin("HTTP://LOCALHOST:8080/a"), origin("http://localhost:8080/b"));
+        assert_ne!(origin("http://127.0.0.1/mcp"), origin("http://127.0.0.1:8080/mcp"));
+        assert_ne!(origin("http://127.0.0.1:443/mcp"), origin("https://127.0.0.1/mcp"));
+    }
+
+    /// A deadline under a second isn't stretched: a redirect that arrives after it isn't followed.
+    #[test]
+    fn a_short_deadline_is_not_extended_for_a_redirect() {
+        let (url, redirector) = redirect_server("/mcp/".into(), Duration::from_millis(300), 2);
+        let msg = json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {}});
+        let err = http_to(&url).post(&msg, soon(Duration::from_millis(200)), &|| false).err().unwrap();
+        assert_eq!(err.code, ErrorCode::TimedOut, "{err:?}");
+        assert_eq!(redirector.join().unwrap(), 1, "the redirect target must not be sent the call after the deadline");
+    }
+
+    /// A loopback server that reads each request and never answers, until the test drops the sender.
+    fn silent_server(head: Option<&'static str>) -> (String, std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let (stop, stopped) = channel::<()>();
+        let handle = std::thread::spawn(move || {
+            let Ok((mut s, _)) = listener.accept() else { return };
+            let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
+            drain_http_request(&mut s);
+            if let Some(head) = head {
+                let _ = s.write_all(head.as_bytes());
+                let _ = s.flush();
+            }
+            let _ = stopped.recv_timeout(Duration::from_secs(40));
+        });
+        (url, stop, handle)
+    }
+
+    /// The cancellation notice is best effort: a server that takes it and never answers doesn't
+    /// keep the caller waiting.
+    #[test]
+    fn a_cancelled_call_does_not_wait_long_for_its_notice() {
+        let (url, stop, server) = silent_server(None);
+        let mut client = McpClient { name: "local".into(), transport: Box::new(http_to(&url)), next_id: 1 };
+        let started = Instant::now();
+        let err = client.call_tool("echo", json!({}), Duration::from_secs(10), &|| true).err().unwrap();
+        let took = started.elapsed();
+        drop(stop);
+        server.join().unwrap();
+        assert_eq!(err.code, ErrorCode::Cancelled, "{err:?}");
+        assert!(took < Duration::from_secs(5), "took {took:?}");
+    }
+
+    /// An answer whose body arrives after the deadline is a timeout, for JSON and event streams.
+    #[test]
+    fn a_late_answer_body_is_a_timeout() {
+        for head in [
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 100\r\n\r\n",
+        ] {
+            let (url, stop, server) = silent_server(Some(head));
+            let msg = json!({"jsonrpc": "2.0", "id": 5, "method": "tools/list", "params": {}});
+            let started = Instant::now();
+            let err = http_to(&url).request(&msg, 5, soon(Duration::from_millis(500)), &|| false).err().unwrap();
+            let took = started.elapsed();
+            drop(stop);
+            server.join().unwrap();
+            assert_eq!(err.code, ErrorCode::TimedOut, "{head}: {err:?}");
+            assert!(took < Duration::from_secs(3), "{head}: took {took:?}");
+        }
     }
 
     /// Cancelling while the first server is answering stops the message from being sent again.
@@ -949,7 +1057,7 @@ mod tests {
         let target = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let (url, redirector) = redirect_server(format!("http://{}/mcp", target.local_addr().unwrap()), Duration::ZERO, 1);
         let msg = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {}});
-        let err = http_to(&url).post(&msg, Duration::from_secs(10), &|| true).err().unwrap();
+        let err = http_to(&url).post(&msg, soon(Duration::from_secs(10)), &|| true).err().unwrap();
         assert_eq!(err.code, ErrorCode::Cancelled, "{err:?}");
         assert_eq!(redirector.join().unwrap(), 1);
         target.set_nonblocking(true).unwrap();
@@ -965,7 +1073,7 @@ mod tests {
         let (url, redirector) = redirect_server("/mcp/".into(), Duration::from_millis(900), 2);
         let msg = json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}});
         let started = Instant::now();
-        let err = http_to(&url).post(&msg, Duration::from_secs(1), &|| false).err().unwrap();
+        let err = http_to(&url).post(&msg, soon(Duration::from_secs(1)), &|| false).err().unwrap();
         assert_eq!(err.code, ErrorCode::TimedOut, "{err:?}");
         assert!(started.elapsed() < Duration::from_millis(1500), "took {:?}", started.elapsed());
         assert_eq!(redirector.join().unwrap(), 2);
@@ -981,6 +1089,8 @@ mod tests {
         assert_eq!(resolve_location(base, "/mcp/").as_deref(), Some("http://127.0.0.1:8080/mcp/"));
         assert_eq!(resolve_location(base, "mcp/").as_deref(), Some("http://127.0.0.1:8080/api/mcp/"));
         assert_eq!(resolve_location(base, "?y=2").as_deref(), Some("http://127.0.0.1:8080/api/mcp?y=2"));
+        // A query-only redirect keeps the path it answered, dot segments and all.
+        assert_eq!(resolve_location("http://127.0.0.1:8080/api/../mcp?x=1", "?y=2").as_deref(), Some("http://127.0.0.1:8080/api/../mcp?y=2"));
         assert_eq!(resolve_location(base, "//evil.example/mcp").as_deref(), Some("http://evil.example/mcp"));
         assert_eq!(resolve_location(base, "HTTPS://evil.example/").as_deref(), Some("HTTPS://evil.example/"));
         assert_eq!(resolve_location(base, "  "), None);
