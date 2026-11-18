@@ -1339,6 +1339,7 @@ Owner: open · Status: in progress
       Objects) are checked only on contributors' machines: run them on a Windows runner too
 - [ ] "Claude Code on <ssh host>" is offered for any SSH host, whether or not it has Claude Code
       (#62)
+      — claimed: AlexJoaquimPereira, branch bugfix/r2.2-ssh-agent-check
 - [ ] Gemini CLI's sign-in reportedly refuses individuals now (#400): check, and stop recommending
       it in the builder setup dialog if so
 - [x] DeepSeek Harness: an adapter runs `dsh --profile headless "<task>"` and hands it our tool
