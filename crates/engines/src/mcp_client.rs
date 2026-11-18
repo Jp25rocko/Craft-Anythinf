@@ -316,7 +316,10 @@ impl Http {
     fn new(name: &str, u: &ServerUrl) -> Result<Http, ToolError> {
         let url = u.url.trim();
         if !url_allowed(url) {
-            return Err(ToolError::invalid(format!("The {name} plugin's url must start with https:// (or http:// to this computer).")));
+            return Err(ToolError::invalid(format!(
+                "The {name} plugin's url must start with https:// (or http:// to this computer), name a host without user:password@, and use a port from 0 to 65535 if it has one."
+            ))
+            .with_remediation("Put keys or tokens in the plugin's headers in config.toml ([[plugins.mcp]]), not in the url."));
         }
         let https = url.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("https:"));
         Ok(Http {
@@ -339,7 +342,8 @@ impl Http {
             .timeout_connect(Some(Duration::from_secs(20)))
             .timeout_global(Some(timeout.max(Duration::from_secs(1))));
         if !self.https {
-            // Plain HTTP is allowed only to loopback; never follow a redirect off this computer.
+            // Plain HTTP is allowed only to loopback. Redirects are followed by hand below, so one
+            // that leaves this computer is refused before the headers and body are sent again.
             builder = builder.max_redirects(0);
         }
         #[cfg(test)]
@@ -347,26 +351,56 @@ impl Http {
             builder = builder.proxy(None).tls_config(tls.clone());
         }
         let agent = builder.build().new_agent();
-        let mut req = agent.post(&self.url).header("Content-Type", "application/json").header("Accept", "application/json, text/event-stream");
-        if self.initialized {
-            req = req.header("MCP-Protocol-Version", PROTOCOL);
-        }
-        if let Some(s) = &self.session {
-            req = req.header("Mcp-Session-Id", s);
-        }
-        for (k, v) in &self.headers {
-            req = req.header(k, v);
-        }
-        let resp = req.send(msg.to_string()).map_err(|e| {
-            if matches!(e, ureq::Error::RequireHttpsOnly(_)) {
-                // This error carries the redirect URI, which can contain tokens or signed parameters.
-                return ToolError::new(ErrorCode::EngineMissing, format!("The {} plugin redirected to plain HTTP and was refused.", self.name))
-                    .with_remediation("Keep every redirect for a remote MCP plugin on HTTPS.");
+        let body = msg.to_string();
+        let mut url = self.url.clone();
+        let mut hops = 0;
+        let resp = loop {
+            let mut req = agent.post(&url).header("Content-Type", "application/json").header("Accept", "application/json, text/event-stream");
+            if self.initialized {
+                req = req.header("MCP-Protocol-Version", PROTOCOL);
             }
-            let code = if matches!(e, ureq::Error::Timeout(_)) { ErrorCode::TimedOut } else { ErrorCode::EngineMissing };
-            ToolError::new(code, format!("Couldn't reach the {} plugin: {e}", self.name))
-                .with_remediation("Check its url in config.toml ([[plugins.mcp]]) and your connection.")
-        })?;
+            if let Some(s) = &self.session {
+                req = req.header("Mcp-Session-Id", s);
+            }
+            for (k, v) in &self.headers {
+                req = req.header(k, v);
+            }
+            let resp = req.send(body.as_str()).map_err(|e| {
+                if matches!(e, ureq::Error::RequireHttpsOnly(_)) {
+                    // This error carries the redirect URI, which can contain tokens or signed parameters.
+                    return ToolError::new(ErrorCode::EngineMissing, format!("The {} plugin redirected to plain HTTP and was refused.", self.name))
+                        .with_remediation("Keep every redirect for a remote MCP plugin on HTTPS.");
+                }
+                let code = if matches!(e, ureq::Error::Timeout(_)) { ErrorCode::TimedOut } else { ErrorCode::EngineMissing };
+                ToolError::new(code, format!("Couldn't reach the {} plugin: {e}", self.name))
+                    .with_remediation("Check its url in config.toml ([[plugins.mcp]]) and your connection.")
+            })?;
+            let status = resp.status().as_u16();
+            if self.https || !matches!(status, 301 | 302 | 303 | 307 | 308) {
+                break resp;
+            }
+            let Some(next) = resp.headers().get("location").and_then(|v| v.to_str().ok()).and_then(|l| resolve_location(&url, l)) else {
+                break resp;
+            };
+            // The target stays out of these errors: it can carry tokens or signed parameters.
+            if !(next.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("http:")) && url_allowed(&next)) {
+                return Err(ToolError::new(
+                    ErrorCode::EngineMissing,
+                    format!("The {} plugin redirected to an address other than http:// on this computer, and was refused.", self.name),
+                )
+                .with_remediation("Set its url in config.toml ([[plugins.mcp]]) to the final address, or keep its redirects on this computer."));
+            }
+            // 301, 302 and 303 turn a POST into a GET, which can't carry an MCP message.
+            if !matches!(status, 307 | 308) {
+                break resp;
+            }
+            if hops == MAX_REDIRECTS {
+                return Err(ToolError::new(ErrorCode::EngineMissing, format!("The {} plugin redirected more than {MAX_REDIRECTS} times.", self.name))
+                    .with_remediation("Set its url in config.toml ([[plugins.mcp]]) to the final address."));
+            }
+            hops += 1;
+            url = next;
+        };
         if let Some(s) = resp.headers().get("mcp-session-id").and_then(|v| v.to_str().ok()) {
             self.session = Some(s.to_string());
         }
@@ -439,6 +473,39 @@ impl Transport for Http {
             Ok(m) if answers(&m, id) => Ok(m),
             _ => Err(unreadable(&"the event stream ended without an answer")),
         }
+    }
+}
+
+/// Redirects a plain HTTP plugin on this computer may take for one message.
+const MAX_REDIRECTS: usize = 5;
+
+/// Resolves a `Location` header against the URL that answered it: absolute, scheme-relative,
+/// absolute-path, query-only, or path-relative.
+fn resolve_location(base: &str, location: &str) -> Option<String> {
+    let loc = location.trim();
+    if loc.is_empty() {
+        return None;
+    }
+    let absolute = loc.split_once(':').is_some_and(|(scheme, _)| {
+        scheme.as_bytes().first().is_some_and(u8::is_ascii_alphabetic) && scheme.bytes().all(|b| b.is_ascii_alphanumeric() || b"+-.".contains(&b))
+    });
+    if absolute {
+        return Some(loc.to_string());
+    }
+    let uri = base.parse::<ureq::http::Uri>().ok()?;
+    let scheme = uri.scheme_str()?;
+    if loc.starts_with("//") {
+        return Some(format!("{scheme}:{loc}"));
+    }
+    let origin = format!("{scheme}://{}", uri.authority()?.as_str());
+    let path = uri.path();
+    if loc.starts_with('/') {
+        Some(format!("{origin}{loc}"))
+    } else if loc.starts_with('?') {
+        Some(format!("{origin}{path}{loc}"))
+    } else {
+        let dir = path.rfind('/').map_or("/", |i| &path[..=i]);
+        Some(format!("{origin}{dir}{loc}"))
     }
 }
 
@@ -531,12 +598,18 @@ mod tests {
     /// A tiny Streamable HTTP server on loopback: JSON for initialize (with a session id), 202 for
     /// notifications, an event stream for tools/list, JSON for tools/call. It checks the headers.
     fn http_server() -> (String, std::thread::JoinHandle<Vec<String>>) {
+        http_server_with(4, false)
+    }
+
+    /// `http_server` answering `accepts` connections. With `slash_redirect`, a POST to `/mcp`
+    /// gets a 307 to `/mcp/` (as many local frameworks send) and is recorded as `307 <method>`.
+    fn http_server_with(accepts: usize, slash_redirect: bool) -> (String, std::thread::JoinHandle<Vec<String>>) {
         use std::io::Read;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/mcp", listener.local_addr().unwrap());
         let handle = std::thread::spawn(move || {
             let mut seen = Vec::new();
-            for _ in 0..4 {
+            for _ in 0..accepts {
                 let (mut s, _) = listener.accept().unwrap();
                 let mut buf = Vec::new();
                 let mut chunk = [0u8; 4096];
@@ -555,7 +628,13 @@ mod tests {
                 let msg: Value = serde_json::from_str(&body).unwrap();
                 let method = msg["method"].as_str().unwrap_or_default().to_string();
                 let lower = head.to_ascii_lowercase();
-                seen.push(format!("{method} session={} auth={}", lower.contains("mcp-session-id: s-1"), lower.contains("authorization: bearer t")));
+                let auth = lower.contains("authorization: bearer t");
+                if slash_redirect && lower.starts_with("post /mcp ") {
+                    seen.push(format!("307 {method} auth={auth}"));
+                    s.write_all(b"HTTP/1.1 307 Temporary Redirect\r\nLocation: /mcp/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                    continue;
+                }
+                seen.push(format!("{method} session={} auth={auth}", lower.contains("mcp-session-id: s-1")));
                 let id = msg.get("id").cloned().unwrap_or(Value::Null);
                 let json_reply = |result: Value, extra: &str| {
                     let body = json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string();
@@ -688,34 +767,32 @@ mod tests {
         }
     }
 
-    /// A loopback HTTP server cannot redirect a request (with its headers and body) to a second
-    /// HTTP endpoint.
+    /// A plain HTTP plugin on this computer that 307s to `/mcp/` on the same listener is followed,
+    /// and the body and headers are sent again.
     #[test]
-    fn loopback_http_refuses_redirects_without_following() {
+    fn loopback_http_follows_a_trailing_slash_redirect() {
+        let (url, server) = http_server_with(4, true);
+        let headers = BTreeMap::from([("Authorization".to_string(), "Bearer t".to_string())]);
+        McpClient::connect("local", &Server::Url(ServerUrl { url, headers }), Duration::from_secs(10)).unwrap();
+        assert_eq!(
+            server.join().unwrap(),
+            [
+                "307 initialize auth=true",
+                "initialize session=false auth=true",
+                "307 notifications/initialized auth=true",
+                "notifications/initialized session=true auth=true"
+            ]
+        );
+    }
+
+    /// A plain HTTP plugin on this computer that redirects off it is refused before the headers
+    /// and body go anywhere, and the error says why without echoing the target.
+    #[test]
+    fn loopback_http_refuses_a_redirect_off_this_computer() {
         use std::sync::Arc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::atomic::Ordering;
 
-        let target_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        target_listener.set_nonblocking(true).unwrap();
-        let target_port = target_listener.local_addr().unwrap().port();
-        let target_seen = Arc::new(AtomicUsize::new(0));
-        let seen_clone = target_seen.clone();
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let stop_clone = stop.clone();
-        let target_worker = std::thread::spawn(move || {
-            while !stop_clone.load(Ordering::SeqCst) {
-                if let Ok((mut s, _)) = target_listener.accept() {
-                    s.set_nonblocking(false).unwrap();
-                    let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
-                    drain_http_request(&mut s);
-                    seen_clone.fetch_add(1, Ordering::SeqCst);
-                    let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
-                } else {
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-            }
-        });
-
         let redirect_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         redirect_listener.set_nonblocking(true).unwrap();
         let redirect_url = format!("http://{}/mcp", redirect_listener.local_addr().unwrap());
@@ -728,7 +805,7 @@ mod tests {
                     let _ = s.set_write_timeout(Some(Duration::from_secs(2)));
                     drain_http_request(&mut s);
                     let reply =
-                        format!("HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{target_port}/steal\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://192.0.2.1/steal?sig=private\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
                     let _ = s.write_all(reply.as_bytes());
                     let _ = s.flush();
                     break;
@@ -741,11 +818,21 @@ mod tests {
         let res = McpClient::connect("demo", &Server::Url(ServerUrl { url: redirect_url, headers: secret_headers }), Duration::from_secs(5));
         stop.store(true, Ordering::SeqCst);
         redirect_worker.join().unwrap();
-        target_worker.join().unwrap();
 
         let err = res.err().unwrap();
-        assert_eq!(target_seen.load(Ordering::SeqCst), 0, "loopback HTTP redirect must not be followed");
-        assert!(err.message.contains("302"), "{err:?}");
+        assert!(err.message.contains("other than http:// on this computer"), "{err:?}");
+        assert!(!format!("{err:?}").contains("192.0.2.1") && !format!("{err:?}").contains("private"), "redirect target leaked: {err:?}");
+    }
+
+    #[test]
+    fn redirect_locations_resolve_against_the_answering_url() {
+        let base = "http://127.0.0.1:8080/api/mcp?x=1";
+        assert_eq!(resolve_location(base, "/mcp/").as_deref(), Some("http://127.0.0.1:8080/mcp/"));
+        assert_eq!(resolve_location(base, "mcp/").as_deref(), Some("http://127.0.0.1:8080/api/mcp/"));
+        assert_eq!(resolve_location(base, "?y=2").as_deref(), Some("http://127.0.0.1:8080/api/mcp?y=2"));
+        assert_eq!(resolve_location(base, "//evil.example/mcp").as_deref(), Some("http://evil.example/mcp"));
+        assert_eq!(resolve_location(base, "HTTPS://evil.example/").as_deref(), Some("HTTPS://evil.example/"));
+        assert_eq!(resolve_location(base, "  "), None);
     }
 
     /// An HTTPS MCP plugin (including uppercase `HTTPS://`) refuses a redirect to plain HTTP
