@@ -2148,9 +2148,10 @@ Owner: open · Status: in progress
 - [x] `core_archives_compare` reports `rows_capped` and a partial-coverage limitation when the
       added, removed, changed or moved lists are cut at `max_rows`, while its counts stay complete.
       — claimed: AlexJoaquimPereira, branch bugfix/r3.11-archive-compare-rows
-- [ ] `core_archive_show` on a folder adds every folder and link before any file, so when
-      `max_entries` cuts the list, folders push files out: a folder with 5 files and 2,001 subfolders
-      reads "0 files in 100 entries". Keep the entries in path order before the cut
+- [x] `core_archive_show` on a folder added every folder and link before any file, so when
+      `max_entries` cut the list, folders pushed files out: a folder with 5 files and 2,001
+      subfolders read "0 files in 100 entries". Folders, links and files are now one list in path
+      order before the cut, and no file after the cut is read
       — claimed: hichang4u, branch bugfix/r3.11-inventory-path-order
 
 ### R3.12 Format parser correctness
