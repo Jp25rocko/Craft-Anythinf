@@ -1,5 +1,6 @@
 # vi: original Vietnamese UI translations (address the person as "bạn"). Licensed MIT OR Apache-2.0.
 # UTF-8: English source<TAB>translation. Keep placeholders and escapes intact.
+Default (its own settings)	Mặc định (cài đặt riêng của nó)
 OpenCode default	Mặc định của OpenCode
 Model default	Mô hình mặc định
 Thinking depth	Mức độ suy nghĩ
@@ -304,6 +305,7 @@ Couldn't look through that folder.	Không thể duyệt thư mục đó.
 Couldn't open it.	Không thể mở nó.
 Couldn't open the folder.	Không thể mở thư mục.
 Couldn't open {}: {}	Không thể mở {}: {}
+Couldn't save your settings.	Không thể lưu cài đặt.
 Couldn't start a worker thread: {e}	Không thể khởi động luồng xử lý: {e}
 Couldn't start it.	Không thể khởi động nó.
 Coverage unknown	Chưa rõ mức bao phủ
@@ -1494,3 +1496,5 @@ You're up to date.	Bạn đang dùng phiên bản mới nhất.
 Forget a website sign-in	Quên thông tin đăng nhập của một trang web
 Sign in to a website	Đăng nhập vào một trang web
 Some shared files could not be hard-linked and were copied instead ({size}).	Một số tệp chia sẻ không thể tạo liên kết cứng nên đã được sao chép ({size}).
+This server lists several chat models. Choose one:	Máy chủ này có nhiều mô hình trò chuyện. Hãy chọn một:
+Choose a model	Chọn mô hình

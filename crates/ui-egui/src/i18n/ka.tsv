@@ -1,5 +1,6 @@
 # ka: original Georgian UI translations. Licensed MIT OR Apache-2.0.
 # UTF-8: English source<TAB>translation. Keep placeholders and escapes intact.
+Default (its own settings)	ნაგულისხმევი (საკუთარი პარამეტრები)
 OpenCode default	OpenCode-ის ნაგულისხმევი
 Model default	მოდელის ნაგულისხმევი
 About 60 GB, an Epic Games account, and Xcode.	დაახლოებით 60 GB, Epic Games-ის ანგარიში და Xcode.
@@ -338,6 +339,7 @@ Couldn't look through that folder.	იმ საქაღალდის და�
 Couldn't open it.	გახსნა ვერ მოხერხდა.
 Couldn't open the folder.	საქაღალდის გახსნა ვერ მოხერხდა.
 Couldn't open {}: {}	{}-ის გახსნა ვერ მოხერხდა: {}
+Couldn't save your settings.	პარამეტრების შენახვა ვერ მოხერხდა.
 Couldn't start a worker thread: {e}	სამუშაო ნაკადის გაშვება ვერ მოხერხდა: {e}
 Couldn't start it.	გაშვება ვერ მოხერხდა.
 Coverage unknown	დაფარვა უცნობია
@@ -1494,3 +1496,5 @@ You're up to date.	უახლეს ვერსიას იყენებ�
 Forget a website sign-in	ვებსაიტზე შესვლის დავიწყება
 Sign in to a website	ვებსაიტზე შესვლა
 Some shared files could not be hard-linked and were copied instead ({size}).	ზოგიერთი საერთო ფაილი მყარი ბმულით ვერ დაკავშირდა და დაკოპირდა ({size}).
+This server lists several chat models. Choose one:	ეს სერვერი რამდენიმე ჩატის მოდელს გვთავაზობს. აირჩიეთ ერთი:
+Choose a model	აირჩიეთ მოდელი

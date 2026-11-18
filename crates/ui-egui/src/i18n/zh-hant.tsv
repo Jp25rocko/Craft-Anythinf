@@ -1,5 +1,6 @@
 # zh-hant: original Chinese UI translations. Licensed MIT OR Apache-2.0.
 # UTF-8: English source<TAB>translation. Keep placeholders and escapes intact.
+Default (its own settings)	預設（其自身設定）
 OpenCode default	OpenCode 預設設定
 Model default	模型預設設定
 Thinking depth	思考深度
@@ -304,6 +305,7 @@ Couldn't look through that folder.	無法檢視該資料夾。
 Couldn't open it.	無法開啟。
 Couldn't open the folder.	無法開啟資料夾。
 Couldn't open {}: {}	無法開啟 {}：{}
+Couldn't save your settings.	無法儲存設定。
 Couldn't start a worker thread: {e}	無法啟動工作執行緒：{e}
 Couldn't start it.	無法啟動。
 Coverage unknown	涵蓋範圍未知
@@ -1494,3 +1496,5 @@ You're up to date.	已是最新版本。
 Forget a website sign-in	忘記網站登入
 Sign in to a website	登入網站
 Some shared files could not be hard-linked and were copied instead ({size}).	部分共用檔案無法建立硬連結，已改為複製（{size}）。
+This server lists several chat models. Choose one:	此伺服器提供多個聊天模型。請選擇一個：
+Choose a model	選擇模型
