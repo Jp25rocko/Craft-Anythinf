@@ -164,6 +164,10 @@ impl McpClient {
     }
 
     fn request(&mut self, method: &str, params: Value, timeout: Duration, cancelled: &dyn Fn() -> bool) -> Result<Value, ToolError> {
+        // Nothing is sent, so there is no request for a cancellation notice to name.
+        if cancelled() {
+            return Err(ToolError::cancelled());
+        }
         let id = self.next_id;
         self.next_id = self.next_id.saturating_add(1);
         let msg = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
@@ -390,6 +394,15 @@ impl Http {
                     return ToolError::new(ErrorCode::EngineMissing, format!("The {} plugin redirected to plain HTTP and was refused.", self.name))
                         .with_remediation("Keep every redirect for a remote MCP plugin on HTTPS.");
                 }
+                if matches!(e, ureq::Error::Protocol(_)) {
+                    // These carry raw text from the answer, such as a malformed redirect target
+                    // with signed parameters.
+                    return ToolError::new(
+                        ErrorCode::GarbledOutput,
+                        format!("The {} plugin sent an HTTP answer that couldn't be read, such as a malformed redirect.", self.name),
+                    )
+                    .with_remediation("Check its url in config.toml ([[plugins.mcp]]) and the server's redirects.");
+                }
                 let code = if timed_out(&e) { ErrorCode::TimedOut } else { ErrorCode::EngineMissing };
                 ToolError::new(code, format!("Couldn't reach the {} plugin: {e}", self.name))
                     .with_remediation("Check its url in config.toml ([[plugins.mcp]]) and your connection.")
@@ -458,9 +471,6 @@ impl Transport for Http {
     }
 
     fn request(&mut self, msg: &Value, id: u64, deadline: Instant, cancelled: &dyn Fn() -> bool) -> Result<Value, ToolError> {
-        if cancelled() {
-            return Err(ToolError::cancelled());
-        }
         let resp = self.post(msg, deadline, cancelled)?;
         let event_stream = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).is_some_and(|t| t.starts_with("text/event-stream"));
         let unreadable =
@@ -508,7 +518,7 @@ impl Transport for Http {
 const MAX_REDIRECTS: usize = 5;
 
 /// Resolves a `Location` header against the URL that answered it: absolute, scheme-relative,
-/// absolute-path, query-only, or path-relative, with `.` and `..` segments removed (RFC 3986
+/// absolute-path, query-only, fragment-only, or path-relative, with `.` and `..` segments removed (RFC 3986
 /// section 5.2.4).
 fn resolve_location(base: &str, location: &str) -> Option<String> {
     let loc = location.trim();
@@ -533,6 +543,9 @@ fn resolve_location(base: &str, location: &str) -> Option<String> {
     } else if loc.starts_with('?') {
         // The base path is kept exactly as it was sent.
         return Some(format!("{origin}{path}{loc}"));
+    } else if loc.starts_with('#') {
+        // A fragment isn't sent, so this is the same request target again.
+        return Some(format!("{origin}{}", uri.path_and_query().map_or(path, |p| p.as_str())));
     } else {
         let dir = path.rfind('/').map_or("/", |i| &path[..=i]);
         format!("{origin}{dir}{loc}")
@@ -844,7 +857,8 @@ mod tests {
 
     /// Drain an incoming HTTP/1.1 request (headers plus `Content-Length` body, bounded in bytes
     /// and time) before replying so closing the socket never races unread `POST` bytes with a RST.
-    fn drain_http_request(stream: &mut impl std::io::Read) {
+    /// Returns what was read.
+    fn drain_http_request(stream: &mut impl std::io::Read) -> String {
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut buf = Vec::new();
         let mut chunk = [0u8; 1024];
@@ -865,6 +879,7 @@ mod tests {
                 Err(_) => break,
             }
         }
+        String::from_utf8_lossy(&buf).into_owned()
     }
 
     /// A plain HTTP plugin on this computer that 307s to `/mcp/` on the same listener is followed,
@@ -999,8 +1014,8 @@ mod tests {
         assert_eq!(redirector.join().unwrap(), 1, "the redirect target must not be sent the call after the deadline");
     }
 
-    /// A loopback server that reads each request and never answers, until the test drops the sender.
-    fn silent_server(head: Option<&'static str>) -> (String, std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+    /// A loopback server that reads one request, sends `head` and nothing more, until the test drops the sender.
+    fn silent_server(head: &'static str) -> (String, std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/mcp", listener.local_addr().unwrap());
         let (stop, stopped) = channel::<()>();
@@ -1008,28 +1023,74 @@ mod tests {
             let Ok((mut s, _)) = listener.accept() else { return };
             let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
             drain_http_request(&mut s);
-            if let Some(head) = head {
-                let _ = s.write_all(head.as_bytes());
-                let _ = s.flush();
-            }
+            let _ = s.write_all(head.as_bytes());
+            let _ = s.flush();
             let _ = stopped.recv_timeout(Duration::from_secs(40));
         });
         (url, stop, handle)
     }
 
-    /// The cancellation notice is best effort: a server that takes it and never answers doesn't
-    /// keep the caller waiting.
+    /// A call cancelled after the server got it is followed by a notice naming that request. The
+    /// notice is best effort: a server that takes it and never answers doesn't keep the caller
+    /// waiting.
     #[test]
-    fn a_cancelled_call_does_not_wait_long_for_its_notice() {
-        let (url, stop, server) = silent_server(None);
+    fn a_cancelled_call_names_its_request_and_does_not_wait_long_for_the_notice() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let got_call = Arc::new(AtomicBool::new(false));
+        let flag = got_call.clone();
+        let (stop, stopped) = channel::<()>();
+        let server = std::thread::spawn(move || {
+            listener.set_nonblocking(true).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let (mut bodies, mut held) = (Vec::new(), Vec::new());
+            while bodies.len() < 2 && Instant::now() < deadline {
+                let Ok((mut s, _)) = listener.accept() else {
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                };
+                s.set_nonblocking(false).unwrap();
+                let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
+                let request = drain_http_request(&mut s);
+                bodies.push(serde_json::from_str::<Value>(request.split_once("\r\n\r\n").map_or("", |(_, b)| b)).unwrap_or(Value::Null));
+                if bodies.len() == 1 {
+                    // The call has arrived: cancel it while its answer is still coming.
+                    flag.store(true, Ordering::SeqCst);
+                    let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 1000\r\n\r\n: working\n");
+                    let _ = s.flush();
+                }
+                held.push(s);
+            }
+            let _ = stopped.recv_timeout(Duration::from_secs(40));
+            bodies
+        });
         let mut client = McpClient { name: "local".into(), transport: Box::new(http_to(&url)), next_id: 1 };
         let started = Instant::now();
-        let err = client.call_tool("echo", json!({}), Duration::from_secs(10), &|| true).err().unwrap();
+        let err = client.call_tool("echo", json!({}), Duration::from_secs(10), &|| got_call.load(Ordering::SeqCst)).err().unwrap();
         let took = started.elapsed();
         drop(stop);
-        server.join().unwrap();
+        let bodies = server.join().unwrap();
         assert_eq!(err.code, ErrorCode::Cancelled, "{err:?}");
         assert!(took < Duration::from_secs(5), "took {took:?}");
+        assert_eq!(bodies.len(), 2, "{bodies:?}");
+        assert_eq!((bodies[0]["method"].as_str(), bodies[0]["id"].as_u64()), (Some("tools/call"), Some(1)), "{bodies:?}");
+        assert_eq!(bodies[1]["method"].as_str(), Some("notifications/cancelled"), "{bodies:?}");
+        assert_eq!(bodies[1]["params"]["requestId"].as_u64(), Some(1), "{bodies:?}");
+    }
+
+    /// A call cancelled before it is sent sends nothing, so no notice names a request the server
+    /// never got.
+    #[test]
+    fn a_call_cancelled_before_sending_sends_nothing() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let mut client = McpClient { name: "local".into(), transport: Box::new(http_to(&url)), next_id: 1 };
+        let err = client.call_tool("echo", json!({}), Duration::from_secs(10), &|| true).err().unwrap();
+        assert_eq!(err.code, ErrorCode::Cancelled, "{err:?}");
+        assert!(listener.accept().is_err(), "nothing should have connected");
     }
 
     /// An answer whose body arrives after the deadline is a timeout, for JSON and event streams.
@@ -1039,7 +1100,7 @@ mod tests {
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n",
             "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 100\r\n\r\n",
         ] {
-            let (url, stop, server) = silent_server(Some(head));
+            let (url, stop, server) = silent_server(head);
             let msg = json!({"jsonrpc": "2.0", "id": 5, "method": "tools/list", "params": {}});
             let started = Instant::now();
             let err = http_to(&url).request(&msg, 5, soon(Duration::from_millis(500)), &|| false).err().unwrap();
@@ -1089,6 +1150,8 @@ mod tests {
         assert_eq!(resolve_location(base, "/mcp/").as_deref(), Some("http://127.0.0.1:8080/mcp/"));
         assert_eq!(resolve_location(base, "mcp/").as_deref(), Some("http://127.0.0.1:8080/api/mcp/"));
         assert_eq!(resolve_location(base, "?y=2").as_deref(), Some("http://127.0.0.1:8080/api/mcp?y=2"));
+        // A fragment-only redirect keeps the path and query it answered.
+        assert_eq!(resolve_location(base, "#status").as_deref(), Some("http://127.0.0.1:8080/api/mcp?x=1"));
         // A query-only redirect keeps the path it answered, dot segments and all.
         assert_eq!(resolve_location("http://127.0.0.1:8080/api/../mcp?x=1", "?y=2").as_deref(), Some("http://127.0.0.1:8080/api/../mcp?y=2"));
         assert_eq!(resolve_location(base, "//evil.example/mcp").as_deref(), Some("http://evil.example/mcp"));
@@ -1096,14 +1159,34 @@ mod tests {
         assert_eq!(resolve_location(base, "  "), None);
     }
 
+    const PRIVATE_SIG: &str = "signed-mcp-query-must-stay-private";
+
     /// An HTTPS MCP plugin (including uppercase `HTTPS://`) refuses a redirect to plain HTTP
     /// before opening the HTTP connection and omits the redirect target URI from the error.
     #[test]
     fn https_downgrade_redirect_is_refused_without_contacting_http() {
+        let (err, https_seen, http_seen) = https_redirect_to(|port| format!("http://127.0.0.1:{port}/mcp?sig={PRIVATE_SIG}"));
+        assert_eq!(https_seen, 1);
+        assert_eq!(http_seen, 0, "downgrade redirect must never contact plain HTTP");
+        assert!(err.message.contains("plain HTTP"), "{err:?}");
+        assert!(!format!("{err:?}").contains(PRIVATE_SIG), "redirect target query leaked: {err:?}");
+    }
+
+    /// A redirect target too malformed to parse stays out of the error as well.
+    #[test]
+    fn a_malformed_https_redirect_target_is_not_shown() {
+        let (err, https_seen, http_seen) = https_redirect_to(|port| format!("http://127.0.0.1:{port}/m cp?sig={PRIVATE_SIG}"));
+        assert_eq!((https_seen, http_seen), (1, 0));
+        assert_eq!(err.code, ErrorCode::GarbledOutput, "{err:?}");
+        assert!(err.message.contains("malformed redirect"), "{err:?}");
+        assert!(!format!("{err:?}").contains(PRIVATE_SIG), "redirect target query leaked: {err:?}");
+    }
+
+    /// Connects an HTTPS plugin whose server answers with a 302 to `location(plain_http_port)`,
+    /// and returns the error and how many requests the HTTPS and plain HTTP servers saw.
+    fn https_redirect_to(location: impl Fn(u16) -> String) -> (ToolError, usize, usize) {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-
-        const PRIVATE_SIG: &str = "signed-mcp-query-must-stay-private";
 
         let key = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
         let cert = key.cert.der().clone();
@@ -1147,6 +1230,7 @@ mod tests {
         let https_seen = Arc::new(AtomicUsize::new(0));
         let https_seen_clone = https_seen.clone();
         let stop_https = stop.clone();
+        let target = location(http_port);
         let https_worker = std::thread::spawn(move || {
             while !stop_https.load(Ordering::SeqCst) {
                 if let Ok((socket, _)) = https_listener.accept() {
@@ -1157,9 +1241,7 @@ mod tests {
                     let mut tls_stream = rustls::StreamOwned::new(conn, socket);
                     drain_http_request(&mut tls_stream);
                     https_seen_clone.fetch_add(1, Ordering::SeqCst);
-                    let reply = format!(
-                        "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{http_port}/mcp?sig={PRIVATE_SIG}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                    );
+                    let reply = format!("HTTP/1.1 302 Found\r\nLocation: {target}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
                     let _ = tls_stream.write_all(reply.as_bytes());
                     let _ = tls_stream.flush();
                     break;
@@ -1180,10 +1262,6 @@ mod tests {
         https_worker.join().unwrap();
         http_worker.join().unwrap();
 
-        let err = res.err().unwrap();
-        assert_eq!(https_seen.load(Ordering::SeqCst), 1);
-        assert_eq!(http_seen.load(Ordering::SeqCst), 0, "downgrade redirect must never contact plain HTTP");
-        assert!(err.message.contains("plain HTTP"), "{err:?}");
-        assert!(!format!("{err:?}").contains(PRIVATE_SIG), "redirect target query leaked: {err:?}");
+        (res.err().unwrap(), https_seen.load(Ordering::SeqCst), http_seen.load(Ordering::SeqCst))
     }
 }
